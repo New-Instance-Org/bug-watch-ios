@@ -496,6 +496,62 @@ public final class LiveAndAiChat: ObservableObject {
         }
     }
 
+    // MARK: - Gap-fill (silent history resync)
+
+    /// Set of conversation IDs with an in-flight silent gap-fill. Stops
+    /// us from firing N concurrent fetches when a burst of subscription
+    /// events all carry `totalMessages` that exceed the local cache.
+    private var inFlightGapFill: Set<String> = []
+    /// Debounce timer per conversation so a rapid sequence of events
+    /// (typical when the app un-backgrounds and replays a queue)
+    /// triggers a single fetch ~250ms after the last event.
+    private var gapFillDebounceTasks: [String: Task<Void, Never>] = [:]
+
+    /// Compare the `totalMessages` field carried by a `csMessageReceived`
+    /// event against the local store. If the server has more than we do,
+    /// schedule a silent merge-fetch — no loading state, no UI flicker.
+    /// Idempotent and debounced.
+    private func scheduleGapFillIfBehind(conversationId: String, remoteTotal: Int) {
+        let localCount = store.messages.count
+        guard remoteTotal > localCount else { return }
+        SseLog.debug("gap-fill scheduled: local=\(localCount) remote=\(remoteTotal) conv=\(conversationId.suffix(8))")
+
+        gapFillDebounceTasks[conversationId]?.cancel()
+        gapFillDebounceTasks[conversationId] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 250 * 1_000_000)
+            if Task.isCancelled { return }
+            await self?.runGapFill(conversationId: conversationId)
+        }
+    }
+
+    /// One-shot silent history fetch that merges into the existing
+    /// store instead of replacing it. Preserves optimistic
+    /// (clientId-only, no server id yet) entries — `mergeMessage` is
+    /// idempotent on `id` and falls back to `clientId`.
+    private func runGapFill(conversationId: String) async {
+        if inFlightGapFill.contains(conversationId) {
+            SseLog.debug("gap-fill skip — already in flight for conv=\(conversationId.suffix(8))")
+            return
+        }
+        inFlightGapFill.insert(conversationId)
+        defer { inFlightGapFill.remove(conversationId) }
+
+        SseLog.debug("gap-fill fetching getCsMessages for conv=\(conversationId.suffix(8))")
+        guard let data = try? await gql.execute(
+            query: Operations.getMessages,
+            variables: ["conversationId": conversationId, "limit": 500]
+        ), let arr = data["getCsMessages"] as? [[String: Any]] else {
+            SseLog.warn("gap-fill fetch returned no data for conv=\(conversationId.suffix(8))")
+            return
+        }
+        let decoded = arr.compactMap { try? GqlClient.decode(ChatMessage.self, from: $0) }
+        SseLog.debug("gap-fill merging \(decoded.count) message(s) into store (was \(store.messages.count))")
+        await MainActor.run {
+            for msg in decoded { self.store.mergeMessage(msg) }
+        }
+        SseLog.debug("gap-fill done. store now has \(store.messages.count) message(s)")
+    }
+
     private func connectTransport() {
         if subscriptionClient != nil { return }
         let mode = config.transport ?? bootstrap?.transport ?? .sse
@@ -505,6 +561,7 @@ public final class LiveAndAiChat: ObservableObject {
         let client: any SubscriptionClient
         switch mode {
         case .ws:
+            SseLog.debug("connectTransport using WebSocket → \(config.wsEndpoint.absoluteString)")
             client = WsSubscriptionClient(
                 endpoint: config.wsEndpoint,
                 apiKey: config.effectiveApiKey,
@@ -512,6 +569,7 @@ public final class LiveAndAiChat: ObservableObject {
                 heartbeatTimeoutMs: timeout
             )
         case .sse:
+            SseLog.debug("connectTransport using SSE → \(config.sseEndpoint.absoluteString)")
             client = SseSubscriptionClient(
                 endpoint: config.sseEndpoint,
                 apiKey: config.effectiveApiKey,
@@ -531,6 +589,7 @@ public final class LiveAndAiChat: ObservableObject {
 
     private func subscribeAll(conversationId: String) {
         guard let client = subscriptionClient else { return }
+        SseLog.debug("subscribeAll convId=\(conversationId.suffix(8))")
         subscriptionCancellables.removeAll()
 
         client.subscribe(SubscriptionRequest(
@@ -540,13 +599,29 @@ public final class LiveAndAiChat: ObservableObject {
         .receive(on: DispatchQueue.main)
         .sink { [weak self] data in
             guard let self else { return }
-            guard let node = data["csMessageReceived"] as? [String: Any],
-                  let msg = try? GqlClient.decode(ChatMessage.self, from: node)
-            else { return }
+            SseLog.debug("→ sub csMessageReceived sink fired, keys=\(Array(data.keys))")
+            guard let node = data["csMessageReceived"] as? [String: Any] else {
+                SseLog.warn("→ sub csMessageReceived: missing 'csMessageReceived' key")
+                return
+            }
+            guard let msg = try? GqlClient.decode(ChatMessage.self, from: node) else {
+                SseLog.warn("→ sub csMessageReceived: decode failed for node=\(node)")
+                return
+            }
+            SseLog.debug("→ sub csMessageReceived decoded id=\(msg.id.suffix(8)) type=\(msg.type.rawValue) total=\(msg.totalMessages.map(String.init) ?? "?") content=\"\(msg.content.prefix(60))\"")
             self.store.mergeMessage(msg)
+            SseLog.debug("→ store.mergeMessage done, messages.count=\(self.store.messages.count)")
             self.emitMessage(msg)
-            // Play the inbound chirp for agent/AI messages when the
-            // host has sounds enabled in its merchant config.
+            // Gap-fill: if the server says the conversation has more
+            // messages than we hold locally, the SSE stream likely
+            // skipped events while the app was backgrounded / network
+            // was flaky. Silently refetch — debounced & idempotent.
+            if let total = msg.totalMessages {
+                self.scheduleGapFillIfBehind(
+                    conversationId: msg.conversationId,
+                    remoteTotal: total
+                )
+            }
             let inbound = msg.type == .agent || msg.type == .ai
             let soundsOn = self.orgConfig?.widget.enableSounds ?? true
             if inbound && soundsOn {
@@ -562,9 +637,11 @@ public final class LiveAndAiChat: ObservableObject {
         .receive(on: DispatchQueue.main)
         .sink { [weak self] data in
             guard let self else { return }
+            SseLog.debug("→ sub csTypingIndicator sink fired, keys=\(Array(data.keys))")
             guard let ind = data["csTypingIndicator"] as? [String: Any] else { return }
             let isTyping = (ind["isTyping"] as? Bool) ?? false
             let userType = ind["userType"] as? String
+            SseLog.debug("→ typing isTyping=\(isTyping) userType=\(userType ?? "?")")
             if userType != "customer" {
                 self.store.setAgentTyping(isTyping)
                 self.emitTyping(isTyping)
@@ -579,6 +656,7 @@ public final class LiveAndAiChat: ObservableObject {
         .receive(on: DispatchQueue.main)
         .sink { [weak self] data in
             guard let self else { return }
+            SseLog.debug("→ sub csConversationUpdated sink fired")
             guard let node = data["csConversationUpdated"] as? [String: Any],
                   let conv = try? GqlClient.decode(Conversation.self, from: node)
             else { return }
@@ -593,6 +671,7 @@ public final class LiveAndAiChat: ObservableObject {
         .receive(on: DispatchQueue.main)
         .sink { [weak self] data in
             guard let self else { return }
+            SseLog.debug("→ sub csAssignmentUpdated sink fired")
             guard let node = data["csAssignmentUpdated"] as? [String: Any],
                   let a = try? GqlClient.decode(Assignment.self, from: node)
             else { return }

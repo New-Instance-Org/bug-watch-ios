@@ -14,12 +14,23 @@ struct MessageRow: View {
     @Environment(\.chatColors) private var colors
 
     var body: some View {
+        // System messages render as centered italic text with no bubble,
+        // no sender label, no timestamp — matches the web SDK exactly.
+        if message.type == .system {
+            SystemMessageRow(content: message.content)
+                .environment(\.chatColors, colors)
+        } else {
+            chatMessageBody
+        }
+    }
+
+    private var chatMessageBody: some View {
         let isCustomer = message.type == .customer
         let hasContent = !message.content.isEmpty
         let hasAttachments = !message.attachments.isEmpty
         let isFailed = message.status == .failed
 
-        VStack(alignment: isCustomer ? .trailing : .leading, spacing: 4) {
+        return VStack(alignment: isCustomer ? .trailing : .leading, spacing: 4) {
             if !isCustomer, let label = senderLabel {
                 Text(label)
                     .font(.system(size: 12, weight: .semibold))
@@ -61,10 +72,33 @@ struct MessageRow: View {
     private var senderLabel: String? {
         switch message.type {
         case .ai: return "AI"
-        case .agent: return message.sender?.senderName ?? "Agent"
-        case .system: return "System"
-        case .customer: return nil
+        case .agent:
+            let raw = message.sender?.senderName ?? "Agent"
+            return ChatHeader.titleCase(raw)
+        case .system, .customer: return nil
         }
+    }
+}
+
+/// Centered italic system notice rendered inline with the message
+/// stream. No bubble, no sender label, no timestamp — matches the web
+/// SDK's `MessageBubble` SYSTEM branch.
+private struct SystemMessageRow: View {
+    let content: String
+    @Environment(\.chatColors) private var colors
+
+    var body: some View {
+        HStack {
+            Spacer(minLength: 0)
+            Text(content)
+                .font(.system(size: 12).italic())
+                .foregroundColor(colors.systemMessageText)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 4)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 
@@ -74,15 +108,18 @@ private struct TextBubble: View {
     @Environment(\.chatColors) private var colors
 
     var body: some View {
-        Text(message.content)
-            .foregroundColor(foregroundColor)
-            .frame(maxWidth: 280, alignment: .leading)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(bubbleShape.fill(backgroundColor))
+        VStack(alignment: .trailing, spacing: 2) {
+            Text(message.content)
+                .foregroundColor(foregroundColor)
+                .frame(maxWidth: 280, alignment: .leading)
+            BubbleFooter(message: message, isCustomer: isCustomer)
+                .environment(\.chatColors, colors)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(bubbleShape.fill(backgroundColor))
     }
 
-    /// Bubble fill — depends only on message type, not orientation.
     private var backgroundColor: Color {
         switch message.type {
         case .customer: return colors.sentBubble
@@ -102,6 +139,57 @@ private struct TextBubble: View {
         isCustomer
             ? RoundedCorners(tl: 16, tr: 16, bl: 16, br: 4)
             : RoundedCorners(tl: 16, tr: 16, bl: 4, br: 16)
+    }
+}
+
+/// Timestamp + status checkmark row that lives inside the bubble's bottom-right
+/// — matches WhatsApp / web SDK / Android. System messages don't render either.
+private struct BubbleFooter: View {
+    let message: ChatMessage
+    let isCustomer: Bool
+    @Environment(\.chatColors) private var colors
+
+    var body: some View {
+        if message.type == .system {
+            EmptyView()
+        } else {
+            HStack(spacing: 4) {
+                if let ts = MessageRowHelpers.formatTimestamp(message.createdAt) {
+                    Text(ts)
+                        .font(.system(size: 10))
+                        .foregroundColor(timestampColor)
+                }
+                if isCustomer {
+                    statusIcon
+                }
+            }
+        }
+    }
+
+    private var timestampColor: Color {
+        isCustomer ? colors.sentTimestamp : colors.receivedTimestamp
+    }
+
+    @ViewBuilder
+    private var statusIcon: some View {
+        switch message.status {
+        case .failed:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 9))
+                .foregroundColor(colors.errorColor)
+        case .sent:
+            Image(systemName: "checkmark")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundColor(timestampColor)
+        case .delivered:
+            Image(systemName: "checkmark.circle")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundColor(timestampColor)
+        case .read:
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundColor(colors.successColor)
+        }
     }
 }
 
@@ -408,6 +496,87 @@ enum MessageRowHelpers {
         if bytes < 1024 * 1024 { return "\(bytes / 1024) KB" }
         let mb = Double(bytes) / (1024 * 1024)
         return String(format: "%.1f MB", mb)
+    }
+
+    private static let iso8601: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    private static let iso8601NoFraction: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale.autoupdatingCurrent
+        f.setLocalizedDateFormatFromTemplate("j:mm")
+        return f
+    }()
+
+    private static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale.autoupdatingCurrent
+        f.dateStyle = .medium
+        f.timeStyle = .none
+        return f
+    }()
+
+    static func parseDate(_ raw: String?) -> Date? {
+        guard let raw, !raw.isEmpty else { return nil }
+        if let d = iso8601.date(from: raw) { return d }
+        if let d = iso8601NoFraction.date(from: raw) { return d }
+        return nil
+    }
+
+    /// Localized short time for a message bubble. Returns nil when no
+    /// timestamp is present so the caller can simply omit the row.
+    static func formatTimestamp(_ raw: String?) -> String? {
+        guard let date = parseDate(raw) else { return nil }
+        return timeFormatter.string(from: date)
+    }
+
+    /// Stable day-bucket key (yyyy-MM-dd in current calendar) so the
+    /// message list can detect day boundaries without comparing Dates
+    /// directly.
+    static func dayKey(_ raw: String?) -> String? {
+        guard let date = parseDate(raw) else { return nil }
+        let comps = Calendar.current.dateComponents([.year, .month, .day], from: date)
+        guard let y = comps.year, let m = comps.month, let d = comps.day else { return nil }
+        return String(format: "%04d-%02d-%02d", y, m, d)
+    }
+
+    /// Human-readable day separator label. Today / Yesterday / localized
+    /// medium date. Matches the Android `MessageList` day-header rule.
+    static func dayLabel(_ raw: String?) -> String? {
+        guard let date = parseDate(raw) else { return nil }
+        let cal = Calendar.current
+        if cal.isDateInToday(date) { return "Today" }
+        if cal.isDateInYesterday(date) { return "Yesterday" }
+        return dayFormatter.string(from: date)
+    }
+}
+
+/// Centered date chip rendered between messages on different days.
+struct DaySeparator: View {
+    let label: String
+    @Environment(\.chatColors) private var colors
+
+    var body: some View {
+        HStack {
+            Spacer()
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(colors.daySeparatorText)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(Capsule().fill(colors.daySeparatorBg))
+            Spacer()
+        }
+        .padding(.vertical, 4)
     }
 }
 

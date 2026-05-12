@@ -52,6 +52,18 @@ public struct ChatMessage: Codable, Equatable, Sendable, Identifiable {
     public let attachments: [MessageAttachment]
     public let createdAt: String?
     public let readAt: String?
+    /// Total number of persisted messages in this message's
+    /// conversation **at the moment the server published this
+    /// envelope**. Only set when the message arrived via the
+    /// `csMessageReceived` subscription — `nil` for messages loaded
+    /// via `getCsMessages` or echoed from mutations.
+    ///
+    /// Used by the SDK's gap-fill path: when an SSE message arrives
+    /// and `totalMessages > store.messages.count`, the SDK silently
+    /// refetches the full history so the UI stays consistent if
+    /// intermediate events were missed (reconnect, slow network,
+    /// app backgrounded).
+    public let totalMessages: Int?
 
     public init(
         id: String,
@@ -64,7 +76,8 @@ public struct ChatMessage: Codable, Equatable, Sendable, Identifiable {
         sender: MessageSender? = nil,
         attachments: [MessageAttachment] = [],
         createdAt: String? = nil,
-        readAt: String? = nil
+        readAt: String? = nil,
+        totalMessages: Int? = nil
     ) {
         self.id = id
         self.clientId = clientId
@@ -77,6 +90,7 @@ public struct ChatMessage: Codable, Equatable, Sendable, Identifiable {
         self.attachments = attachments
         self.createdAt = createdAt
         self.readAt = readAt
+        self.totalMessages = totalMessages
     }
 
     /// `init(from:)` is lenient: missing fields fall back to sensible
@@ -102,6 +116,7 @@ public struct ChatMessage: Codable, Equatable, Sendable, Identifiable {
             createdAt = try c.decodeIfPresent(String.self, forKey: .sentAt)
         }
         readAt = try c.decodeIfPresent(String.self, forKey: .readAt)
+        totalMessages = try c.decodeIfPresent(Int.self, forKey: .totalMessages)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -117,11 +132,12 @@ public struct ChatMessage: Codable, Equatable, Sendable, Identifiable {
         try c.encode(attachments, forKey: .attachments)
         try c.encodeIfPresent(createdAt, forKey: .createdAt)
         try c.encodeIfPresent(readAt, forKey: .readAt)
+        try c.encodeIfPresent(totalMessages, forKey: .totalMessages)
     }
 
     enum CodingKeys: String, CodingKey {
         case id, clientId, conversationId, content, type, status, seq, sender
-        case attachments, createdAt, readAt
+        case attachments, createdAt, readAt, totalMessages
         // The server's `sendCsCustomerMessage` mutation echoes the
         // message with `sentAt` instead of `createdAt`. We accept both.
         case sentAt

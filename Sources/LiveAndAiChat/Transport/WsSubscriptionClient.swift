@@ -1,5 +1,26 @@
 import Foundation
 import Combine
+import os.log
+
+/// WebSocket transport logger, mirrors `SseLog` so the host can
+/// surface a unified diagnostic stream regardless of transport.
+enum WsLog {
+    private static let logger = OSLog(subsystem: "liveandaichat", category: "ws")
+
+    static func debug(_ message: String) {
+        let line = "[LAC/WS] \(message)"
+        print(line)
+        os_log("%{public}@", log: logger, type: .error, line)
+        LACDiagnosticLog.emit(line)
+    }
+
+    static func warn(_ message: String) {
+        let line = "[LAC/WS WARN] \(message)"
+        print(line)
+        os_log("%{public}@", log: logger, type: .error, line)
+        LACDiagnosticLog.emit(line)
+    }
+}
 
 /// graphql-ws sub-protocol client over `URLSessionWebSocketTask`. Same
 /// public surface and reconnect/heartbeat semantics as the SSE client.
@@ -128,8 +149,12 @@ final class WsSubscriptionClient: NSObject, SubscriptionClient {
         var req = URLRequest(url: endpoint)
         req.setValue("graphql-transport-ws", forHTTPHeaderField: "Sec-WebSocket-Protocol")
         req.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        // ngrok-free interstitial guard — same as the SSE path.
+        req.setValue("true", forHTTPHeaderField: "ngrok-skip-browser-warning")
+        req.setValue("LiveAndAiChat-iOS/1.0", forHTTPHeaderField: "User-Agent")
         let t = session.webSocketTask(with: req)
         task = t
+        WsLog.debug("WS open → \(endpoint.absoluteString)")
         t.resume()
         sendFrame(["type": "connection_init", "payload": ["apiKey": apiKey]])
         receiveLoop()
@@ -170,6 +195,7 @@ final class WsSubscriptionClient: NSObject, SubscriptionClient {
             opsLock.lock()
             let snapshot = operations
             opsLock.unlock()
+            WsLog.debug("WS connection_ack — replaying \(snapshot.count) subscription(s)")
             for (id, op) in snapshot { sendSubscribe(opId: id, request: op.request) }
             armWatchdog()
         case "ping":
@@ -182,24 +208,28 @@ final class WsSubscriptionClient: NSObject, SubscriptionClient {
             switch type {
             case "next":
                 if let payload = obj["payload"] as? [String: Any],
-                   let data = payload["data"] as? [String: Any] {
-                    op?.subject.send(data)
+                   let dataField = payload["data"] as? [String: Any] {
+                    WsLog.debug("WS next opId=\(opId.suffix(8)) keys=\(Array(dataField.keys))")
+                    op?.subject.send(dataField)
                 }
             case "complete":
                 opsLock.lock()
                 operations.removeValue(forKey: opId)
                 opsLock.unlock()
+                WsLog.debug("WS complete opId=\(opId.suffix(8))")
                 op?.subject.send(completion: .finished)
             case "error":
+                WsLog.warn("WS error opId=\(opId.suffix(8)) payload=\(obj["payload"] ?? "?")")
                 op?.subject.send(completion: .finished)
             default: break
             }
         default:
-            break
+            WsLog.debug("WS message type=\(type ?? "<nil>")")
         }
     }
 
     private func handleClose() {
+        WsLog.debug("WS closed (stopped=\(stopped))")
         task = nil
         if !stopped { _connectionState.send(.disconnected) }
     }

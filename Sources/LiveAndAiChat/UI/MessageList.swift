@@ -29,38 +29,53 @@ struct MessageList: View {
     @State private var imageLoadTick = 0
 
     var body: some View {
-        let reversed = Array(messages.reversed())
+        let items = MessageList.buildItems(from: messages)
         let unseen = newMessageIds
 
         ZStack(alignment: .bottom) {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
+                        // Anchor marker for the visual bottom (newest).
+                        // Used to detect when the user is "at bottom" via
+                        // PreferenceKey.
+                        Color.clear
+                            .frame(height: 1)
+                            .id("__lac_bottom_anchor__")
+                            .rotationEffect(.degrees(180))
+                            .scaleEffect(x: -1, y: 1, anchor: .center)
+                            .background(
+                                GeometryReader { geo in
+                                    Color.clear.preference(
+                                        key: BottomVisibilityKey.self,
+                                        value: BottomVisibility(
+                                            frame: geo.frame(in: .named("lacScroll"))
+                                        )
+                                    )
+                                }
+                            )
                         if agentTyping {
                             TypingIndicator()
                                 .id("typing")
                                 .rotationEffect(.degrees(180))
                                 .scaleEffect(x: -1, y: 1, anchor: .center)
                         }
-                        ForEach(reversed, id: \.id) { msg in
-                            MessageRow(
-                                message: msg,
-                                onRetry: onRetry,
-                                onImageTap: onImageTap,
-                                onImageLoaded: { imageLoadTick += 1 }
-                            )
-                            .rotationEffect(.degrees(180))
-                            // Flip horizontally so text and bubbles aren't
-                            // mirrored after the outer rotation. Two
-                            // operations compose to identity on glyphs
-                            // while preserving the reverse-stack layout.
-                            .scaleEffect(x: -1, y: 1, anchor: .center)
-                            .id(msg.id)
+                        ForEach(items) { item in
+                            row(for: item)
                         }
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                 }
+                .coordinateSpace(name: "lacScroll")
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(
+                            key: ScrollContainerHeightKey.self,
+                            value: geo.size.height
+                        )
+                    }
+                )
                 .rotationEffect(.degrees(180))
                 .scaleEffect(x: -1, y: 1, anchor: .center)
                 .onAppear {
@@ -81,6 +96,12 @@ struct MessageList: View {
                     guard let id = messages.last?.id, !userScrolledAway else { return }
                     proxy.scrollTo(id, anchor: .bottom)
                 }
+                .onPreferenceChange(BottomVisibilityKey.self) { value in
+                    updateScrollIntent(bottom: value)
+                }
+                .onPreferenceChange(ScrollContainerHeightKey.self) { h in
+                    containerHeight = h
+                }
             }
             if userScrolledAway && !unseen.isEmpty {
                 ScrollToBottomPill(count: unseen.count) {
@@ -95,6 +116,98 @@ struct MessageList: View {
     private var newMessageIds: [String] {
         guard initialised else { return [] }
         return messages.compactMap { seenIds.contains($0.id) ? nil : $0.id }
+    }
+
+    @State private var containerHeight: CGFloat = 0
+
+    private func updateScrollIntent(bottom: BottomVisibility) {
+        guard containerHeight > 0 else { return }
+        // The anchor sits at the visual bottom (post-rotation it's the top
+        // edge of the reversed scroll content). Its frame.minY in scroll
+        // coords tells us how far past the visible window the latest
+        // message has been pushed by user dragging up.
+        let offsetFromBottom = bottom.frame.minY
+        let threshold: CGFloat = 80
+        let scrolledAway = offsetFromBottom > threshold
+        if scrolledAway != userScrolledAway {
+            userScrolledAway = scrolledAway
+        }
+    }
+
+    @ViewBuilder
+    private func row(for item: ListItem) -> some View {
+        switch item.kind {
+        case .day(let label):
+            DaySeparator(label: label)
+                .rotationEffect(.degrees(180))
+                .scaleEffect(x: -1, y: 1, anchor: .center)
+                .id(item.id)
+        case .message(let msg):
+            MessageRow(
+                message: msg,
+                onRetry: onRetry,
+                onImageTap: onImageTap,
+                onImageLoaded: { imageLoadTick += 1 }
+            )
+            .rotationEffect(.degrees(180))
+            // Flip horizontally so text and bubbles aren't mirrored after
+            // the outer rotation. Two operations compose to identity on
+            // glyphs while preserving the reverse-stack layout.
+            .scaleEffect(x: -1, y: 1, anchor: .center)
+            .id(msg.id)
+        }
+    }
+
+    enum ListItemKind {
+        case day(String)
+        case message(ChatMessage)
+    }
+
+    struct ListItem: Identifiable {
+        let id: String
+        let kind: ListItemKind
+    }
+
+    /// Build the rendered list (reversed for visual bottom-up display)
+    /// inserting day-divider rows between messages on different days.
+    static func buildItems(from messages: [ChatMessage]) -> [ListItem] {
+        guard !messages.isEmpty else { return [] }
+        // Chronological order first so day-divider insertion logic is
+        // straightforward; then reverse for the rotated ScrollView.
+        var inserted: [ListItem] = []
+        var lastKey: String?
+        for msg in messages {
+            let key = MessageRowHelpers.dayKey(msg.createdAt)
+            if let key, key != lastKey {
+                if let label = MessageRowHelpers.dayLabel(msg.createdAt) {
+                    inserted.append(ListItem(id: "day:\(key)", kind: .day(label)))
+                }
+                lastKey = key
+            }
+            inserted.append(ListItem(id: msg.id, kind: .message(msg)))
+        }
+        return inserted.reversed()
+    }
+}
+
+/// Preference key for tracking the bottom-anchor row's frame in the
+/// scroll view's coordinate space. Used to detect "user scrolled away
+/// from bottom".
+private struct BottomVisibility: Equatable {
+    let frame: CGRect
+}
+
+private struct BottomVisibilityKey: PreferenceKey {
+    static let defaultValue = BottomVisibility(frame: .zero)
+    static func reduce(value: inout BottomVisibility, nextValue: () -> BottomVisibility) {
+        value = nextValue()
+    }
+}
+
+private struct ScrollContainerHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 

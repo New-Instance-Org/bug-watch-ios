@@ -48,14 +48,19 @@ final class ChatStore: ObservableObject {
     /// - Else append.
     /// After insert/replace, re-sort by (`seq` ?? `Int64.max`).
     func mergeMessage(_ message: ChatMessage) {
+        let before = messages.count
         var list = messages
+        var action: String
         if let idx = list.firstIndex(where: { $0.id == message.id }) {
             list[idx] = message
+            action = "replace-by-id"
         } else if let cid = message.clientId, !cid.isEmpty,
                   let idx = list.firstIndex(where: { $0.clientId == cid }) {
             list[idx] = message
+            action = "replace-by-clientId"
         } else {
             list.append(message)
+            action = "append"
         }
         list.sort { ($0.seq ?? .max) < ($1.seq ?? .max) }
         messages = list
@@ -66,6 +71,7 @@ final class ChatStore: ObservableObject {
         if isInbound && !widgetOpen {
             unreadCount += 1
         }
+        SseLog.debug("store.mergeMessage \(action) id=\(message.id.suffix(8)) type=\(message.type.rawValue) seq=\(message.seq ?? -1) count: \(before)→\(messages.count)")
     }
 
     func setInitialMessages(_ messages: [ChatMessage]) {

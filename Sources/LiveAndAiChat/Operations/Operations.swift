@@ -145,6 +145,7 @@ enum Operations {
         sender { senderId senderName senderEmail }
         attachments { url name type size }
         sentAt deliveredAt readAt
+        totalMessages
       }
     }
     """

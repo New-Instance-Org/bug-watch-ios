@@ -1,4 +1,6 @@
 import SwiftUI
+import UniformTypeIdentifiers
+import UIKit
 import LiveAndAiChat
 
 /// Sample host UI. Mirrors the Android `HeadlessSampleActivity` flow:
@@ -13,12 +15,21 @@ struct RootView: View {
 
     @StateObject private var sdk: LiveAndAiChat
     @State private var showChat = false
+    @State private var showFilePicker = false
+    @State private var showShareSheet = false
+    @State private var shareItems: [Any] = []
     @State private var log: [String] = []
 
     init() {
+        // SSE again — the SDK now uses HTTP1EventSource (Network.framework
+        // + NWConnection with TLS ALPN pinned to `http/1.1`), which
+        // bypasses iOS URLSession's HTTP/2-only behaviour and works
+        // through ngrok-free / any HTTP/1.1-aware proxy. Set
+        // `transport: .ws` if you want to force WebSocket instead.
         let config = try! LiveAndAiChatConfig(
             apiKey: Self.exampleApiKey,
-            baseUrl: Self.exampleBaseUrl
+            baseUrl: Self.exampleBaseUrl,
+            transport: .sse
         )
         let instance = try! LiveAndAiChat.Builder()
             .config(config)
@@ -51,26 +62,63 @@ struct RootView: View {
                 }
                 .disabled(sdk.lifecycle == .initializing)
                 Divider()
-                Text("Event log")
-                    .font(.headline)
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 4) {
-                        ForEach(Array(log.enumerated()), id: \.offset) { _, line in
-                            Text(line)
-                                .font(.system(size: 12, design: .monospaced))
-                                .foregroundColor(.primary)
+                HStack(spacing: 8) {
+                    Text("Event log")
+                        .font(.headline)
+                    Spacer()
+                    Text("\(log.count) lines")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                    Button(action: shareLog) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "square.and.arrow.up")
+                            Text("Share")
                         }
+                        .font(.system(size: 12, weight: .medium))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color(.tertiarySystemBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .disabled(log.isEmpty)
+                    Button(action: clearLog) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "trash")
+                            Text("Clear")
+                        }
+                        .font(.system(size: 12, weight: .medium))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color(.tertiarySystemBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    .disabled(log.isEmpty)
                 }
-                .frame(maxHeight: .infinity)
-                .padding(8)
-                .background(Color(.secondarySystemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 4) {
+                            ForEach(Array(log.enumerated()), id: \.offset) { idx, line in
+                                logLine(line).id(idx)
+                            }
+                            Color.clear.frame(height: 1).id("__bottom__")
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: .infinity)
+                    .padding(8)
+                    .background(Color(.secondarySystemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .onChange(of: log.count) { _ in
+                        withAnimation { proxy.scrollTo("__bottom__", anchor: .bottom) }
+                    }
+                }
             }
             .padding()
             .navigationTitle("LiveAndAiChat")
             .navigationBarTitleDisplayMode(.inline)
+        }
+        .sheet(isPresented: $showShareSheet) {
+            ActivityShareSheet(activityItems: shareItems)
         }
         .sheet(isPresented: $showChat) {
             ChatScreen(
@@ -79,12 +127,45 @@ struct RootView: View {
                     sdk.closeChat()
                     showChat = false
                 },
-                onPickFile: { /* hooked up in Phase 2.B+ */ }
+                onPickFile: { showFilePicker = true }
             )
+            .fileImporter(
+                isPresented: $showFilePicker,
+                allowedContentTypes: [.png, .jpeg, .webP, .gif, .pdf],
+                allowsMultipleSelection: true
+            ) { result in
+                handleFilePick(result)
+            }
         }
         .onAppear {
             sdk.initialize()
             attachListener()
+        }
+    }
+
+    /// Resolves the document-picker result into SDK attach calls. The
+    /// security-scoped URL has to be opened with
+    /// `startAccessingSecurityScopedResource` so reading the file's bytes
+    /// is permitted; we then immediately copy them into memory and hand
+    /// them to the SDK queue.
+    private func handleFilePick(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result else { return }
+        for url in urls {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let data = try Data(contentsOf: url)
+                let mime = UTType(filenameExtension: url.pathExtension)?
+                    .preferredMIMEType ?? "application/octet-stream"
+                sdk.attachFile(
+                    data: data,
+                    name: url.lastPathComponent,
+                    mimeType: mime,
+                    previewUri: url.absoluteString
+                )
+            } catch {
+                log.append("ERR [attach] \(error.localizedDescription)")
+            }
         }
     }
 
@@ -132,21 +213,95 @@ struct RootView: View {
     }
 
     private func attachListener() {
-        let listener = ExampleListener { [self] line in
-            DispatchQueue.main.async {
-                log.append(line)
-                if log.count > 200 { log.removeFirst(log.count - 200) }
-            }
+        let listener = ExampleListener { line in
+            appendLog(line)
         }
         sdk.addDelegate(listener)
         ListenerHolder.shared.keepAlive(listener)
+
+        // Pipe SDK's SSE-layer diagnostic stream into the same event log
+        // so users can copy/share a unified transcript when SSE breaks.
+        LACDiagnosticLog.setHandler { line in
+            appendLog(line)
+        }
     }
+
+    private func appendLog(_ line: String) {
+        let ts = Self.timeFormatter.string(from: Date())
+        let stamped = "\(ts) \(line)"
+        DispatchQueue.main.async {
+            log.append(stamped)
+            if log.count > 1000 { log.removeFirst(log.count - 1000) }
+        }
+    }
+
+    private func shareLog() {
+        let header = """
+        === LiveAndAiChat iOS diagnostic ===
+        captured: \(Self.timeFormatter.string(from: Date()))
+        lifecycle: \(sdk.lifecycle)
+        connection: \(sdk.connectionState)
+        conversation: \(sdk.conversation?.id ?? "—")
+        messages: \(sdk.messages.count)
+        baseUrl: \(Self.exampleBaseUrl)
+        keyPrefix: \(Self.exampleApiKey.prefix(12))…
+        ===
+        """
+        shareItems = [header + "\n\n" + log.joined(separator: "\n")]
+        showShareSheet = true
+    }
+
+    private func clearLog() {
+        log.removeAll()
+    }
+
+    /// Render a single log line. iOS 15+ gets text selection; iOS 14
+    /// falls back to plain Text.
+    @ViewBuilder
+    private func logLine(_ line: String) -> some View {
+        if #available(iOS 15.0, *) {
+            Text(line)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(lineColor(line))
+                .textSelection(.enabled)
+        } else {
+            Text(line)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(lineColor(line))
+        }
+    }
+
+    private func lineColor(_ line: String) -> Color {
+        if line.contains("WARN") || line.contains("ERR ") || line.contains("error=") {
+            return .red
+        }
+        if line.contains("[LAC/SSE]") {
+            return .secondary
+        }
+        if line.contains("RECV") || line.contains("→ sub") {
+            return .blue
+        }
+        if line.contains("SENT") {
+            return .purple
+        }
+        return .primary
+    }
+
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss.SSS"
+        return f
+    }()
 
     // MARK: - Dev configuration
 
-    /// Replace before publishing — but for ngrok dev backends pointing at
-    /// our local gql-server, the test key the team uses is hardcoded here.
-    static let exampleApiKey = "sk_test_3ck4MFEog7TgV5QYOz9wZsNVQTtNRaHn"
+    /// Key used by the example app. Production lives at
+    /// `https://service.cinstance.com` (the SDK's default); for SDK iteration
+    /// we target the team's ngrok dev tunnel instead so we're not exercising
+    /// prod with every rebuild. `baseUrl` override is only honoured in
+    /// debug SDK builds — the example inherits Debug from its local SwiftPM
+    /// build, so this works while developing.
+    static let exampleApiKey = "sk_live_pTxXj494eQaARJ6sR42flJMfbKdLzs8j"
     static let exampleBaseUrl = "https://emerging-fleet-vervet.ngrok-free.app"
 }
 
@@ -179,4 +334,17 @@ final class ExampleListener: LiveAndAiChatDelegate {
     func didEncounterError(_ error: LiveAndAiChatError) {
         onLine("ERR [\(error.type)] \(error.message)")
     }
+}
+
+/// Wraps a `UIActivityViewController` so we can present it as a
+/// SwiftUI sheet. Used by the "Share log" button so users can copy
+/// the diagnostic transcript or send it via Mail / Messages / Files.
+struct ActivityShareSheet: UIViewControllerRepresentable {
+    let activityItems: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
