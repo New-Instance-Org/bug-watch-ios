@@ -334,7 +334,13 @@ struct RootView: View {
     /// prod with every rebuild. `baseUrl` override is only honoured in
     /// debug SDK builds — the example inherits Debug from its local SwiftPM
     /// build, so this works while developing.
-    static let exampleApiKey = "sk_live_pTxXj494eQaARJ6sR42flJMfbKdLzs8j"
+    static let exampleApiKey: String = {
+        if let env = ProcessInfo.processInfo.environment["LAC_EXAMPLE_API_KEY"], !env.isEmpty {
+            return env
+        }
+        return (Bundle.main.object(forInfoDictionaryKey: "LACExampleApiKey") as? String) ?? ""
+    }()
+
     static let exampleBaseUrl = "https://emerging-fleet-vervet.ngrok-free.app"
 }
 

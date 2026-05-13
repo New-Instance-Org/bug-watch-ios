@@ -36,6 +36,8 @@
     <array>
         <string>armv7</string>
     </array>
+    <key>LACExampleApiKey</key>
+    <string></string>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>
