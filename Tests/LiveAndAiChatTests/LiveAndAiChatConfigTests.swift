@@ -21,9 +21,9 @@ final class LiveAndAiChatConfigTests: XCTestCase {
 
     func testDefaultBaseUrlIsProductionService() throws {
         let cfg = try LiveAndAiChatConfig(apiKey: "k")
-        XCTAssertEqual(cfg.baseUrl, "https://service.cinstance.com")
-        XCTAssertEqual(cfg.gqlEndpoint.absoluteString, "https://service.cinstance.com/service")
-        XCTAssertEqual(cfg.wsEndpoint.absoluteString, "wss://service.cinstance.com/graphql/ws")
+        XCTAssertEqual(cfg.baseUrl, "https://service.newinstance.cloud")
+        XCTAssertEqual(cfg.gqlEndpoint.absoluteString, "https://service.newinstance.cloud/service")
+        XCTAssertEqual(cfg.wsEndpoint.absoluteString, "wss://service.newinstance.cloud/graphql/ws")
     }
 
     func testBlankApiKeyRejected() {

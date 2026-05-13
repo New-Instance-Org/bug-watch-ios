@@ -47,7 +47,7 @@ public final class LiveAndAiChat: ObservableObject {
     /// SDK share one source of truth.
     let attachmentQueue: AttachmentQueue
     private let networkMonitor: NetworkMonitor
-    private let log = Logger(subsystem: "com.cinstance.liveandaichat", category: "SDK")
+    private let log = Logger(subsystem: "cloud.newinstance.liveandaichat", category: "SDK")
 
     private var user: ChatUser?
     private var bootstrap: LiveChatBootstrap?

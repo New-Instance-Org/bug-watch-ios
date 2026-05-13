@@ -60,7 +60,7 @@ final class WsSubscriptionClient: NSObject, SubscriptionClient {
         super.init()
     }
 
-    private let queue = DispatchQueue(label: "com.cinstance.liveandaichat.ws", qos: .utility)
+    private let queue = DispatchQueue(label: "cloud.newinstance.liveandaichat.ws", qos: .utility)
     private var stopped = false
     private var connectTask: Task<Void, Never>?
     private var task: URLSessionWebSocketTask?

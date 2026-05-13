@@ -136,7 +136,7 @@ public struct LiveAndAiChatConfig: Sendable {
         return URL(string: wsBase + wsPath)!
     }
 
-    public static let defaultBaseUrl = "https://service.cinstance.com"
+    public static let defaultBaseUrl = "https://service.newinstance.cloud"
 
     private static var isDebugBuild: Bool {
         #if DEBUG
@@ -146,5 +146,5 @@ public struct LiveAndAiChatConfig: Sendable {
         #endif
     }
 
-    private static let log = Logger(subsystem: "com.cinstance.liveandaichat", category: "Config")
+    private static let log = Logger(subsystem: "cloud.newinstance.liveandaichat", category: "Config")
 }

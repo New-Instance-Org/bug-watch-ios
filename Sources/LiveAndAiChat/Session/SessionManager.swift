@@ -10,7 +10,7 @@ import Foundation
 final class SessionManager {
     private let defaults: UserDefaults
 
-    init(suiteName: String = "com.cinstance.liveandaichat.session") {
+    init(suiteName: String = "cloud.newinstance.liveandaichat.session") {
         self.defaults = UserDefaults(suiteName: suiteName) ?? .standard
     }
 

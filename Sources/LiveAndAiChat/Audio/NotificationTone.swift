@@ -22,7 +22,7 @@ public final class NotificationTone {
     private let gapMs: Int = 80
     private let gain: Float = 0.12
 
-    private let queue = DispatchQueue(label: "com.cinstance.liveandaichat.tone", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "cloud.newinstance.liveandaichat.tone", qos: .userInitiated)
 
     private init() {}
 

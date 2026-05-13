@@ -329,7 +329,7 @@ struct RootView: View {
     // MARK: - Dev configuration
 
     /// Key used by the example app. Production lives at
-    /// `https://service.cinstance.com` (the SDK's default); for SDK iteration
+    /// `https://service.newinstance.cloud` (the SDK's default); for SDK iteration
     /// we target the team's ngrok dev tunnel instead so we're not exercising
     /// prod with every rebuild. `baseUrl` override is only honoured in
     /// debug SDK builds — the example inherits Debug from its local SwiftPM

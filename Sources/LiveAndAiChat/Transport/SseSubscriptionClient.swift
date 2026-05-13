@@ -70,7 +70,7 @@ final class SseSubscriptionClient: NSObject, SubscriptionClient {
 
     // MARK: - Lifecycle
 
-    private let queue = DispatchQueue(label: "com.cinstance.liveandaichat.sse", qos: .utility)
+    private let queue = DispatchQueue(label: "cloud.newinstance.liveandaichat.sse", qos: .utility)
     private var stopped = false
     private var connectTask: Task<Void, Never>?
     private var watchdogTimer: DispatchSourceTimer?

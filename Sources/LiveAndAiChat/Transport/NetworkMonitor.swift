@@ -12,7 +12,7 @@ final class NetworkMonitor: ObservableObject {
     @Published private(set) var isOnline: Bool = true
 
     private let monitor = NWPathMonitor()
-    private let queue = DispatchQueue(label: "com.cinstance.liveandaichat.network", qos: .utility)
+    private let queue = DispatchQueue(label: "cloud.newinstance.liveandaichat.network", qos: .utility)
     private var started = false
 
     func start() {
