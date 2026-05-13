@@ -17,7 +17,7 @@ mirror_to_talktothelaw:
     - mkdir -p ~/.ssh && chmod 700 ~/.ssh
     - echo "$MIRROR_SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
     - chmod 600 ~/.ssh/id_ed25519
-    - ssh-keyscan -t ed25519,rsa gitlab.com >> ~/.ssh/known_hosts 2>/dev/null
+    - ssh-keyscan -t ed25519,rsa github.com >> ~/.ssh/known_hosts 2>/dev/null
     - git config --global user.email "ci-mirror@gitlab.com"
     - git config --global user.name "GitLab Mirror Bot"
   script:
