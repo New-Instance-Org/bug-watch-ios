@@ -24,14 +24,14 @@ your iOS app. Hosted by [newinstance.cloud](https://newinstance.cloud).
 In Xcode → **File → Add Package Dependencies…** and enter:
 
 ```
-https://gitlab.com/talktothelaw/liveandaichat-ios.git
+https://github.com/talktothelaw/new-instance-livechat.git
 ```
 
 Or in your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://gitlab.com/talktothelaw/liveandaichat-ios.git", from: "0.1.0"),
+    .package(url: "https://github.com/talktothelaw/new-instance-livechat.git", from: "0.1.0"),
 ],
 targets: [
     .target(

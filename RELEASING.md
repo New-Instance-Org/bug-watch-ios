@@ -71,8 +71,11 @@ pod trunk me
    ```
 
    CocoaPods will:
-   - Re-fetch the tag from the GitLab URL declared in the podspec
-     (`https://gitlab.com/talktothelaw/liveandaichat-ios.git`)
+   - Re-fetch the tag from the public GitHub mirror declared in the podspec
+     (`https://github.com/talktothelaw/new-instance-livechat.git`).
+     The GitLab `mirror_to_talktothelaw` CI job pushes every commit + tag
+     from `origin` (GitLab) to that GitHub URL, so the tagged commit is
+     available there shortly after `git push origin --tags`.
    - Run `pod spec lint` server-side
    - Publish to the master spec repo
 
@@ -85,7 +88,7 @@ pod trunk me
 mkdir /tmp/spm-check && cd /tmp/spm-check
 swift package init --type executable
 # Edit Package.swift to add LiveAndAiChat as a dependency:
-#   .package(url: "https://gitlab.com/talktothelaw/liveandaichat-ios.git", from: "0.2.0")
+#   .package(url: "https://github.com/talktothelaw/new-instance-livechat.git", from: "0.2.0")
 swift package resolve
 
 # CocoaPods — a clean test consumer (after trunk push completes)

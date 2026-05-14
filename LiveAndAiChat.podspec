@@ -11,13 +11,16 @@ Pod::Spec.new do |s|
     Branding and behaviour are configured from the newinstance.cloud dashboard
     — your app just supplies an API key and a user identity.
   DESC
-  s.homepage      = "https://gitlab.com/talktothelaw/liveandaichat-ios"
+  s.homepage      = "https://github.com/talktothelaw/new-instance-livechat"
   s.license       = { :type => "MIT", :file => "LICENSE" }
-  s.author        = { "newinstance.cloud" => "support@newinstance.cloud" }
+  s.author        = {
+    "newinstance.cloud"          => "support@newinstance.cloud",
+    "Nwoko Lawrence Ndubueze"    => "nwokolawrence6@gmail.com"
+  }
   s.platform      = :ios, "14.0"
   s.swift_version = "5.9"
   s.source        = {
-    :git => "https://gitlab.com/talktothelaw/liveandaichat-ios.git",
+    :git => "https://github.com/talktothelaw/new-instance-livechat.git",
     :tag => s.version.to_s
   }
 
