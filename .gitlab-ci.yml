@@ -1,7 +1,3 @@
-workflow:
-  rules:
-    - if: $CI_PROJECT_PATH == "new-instance/chat-service-sdk/liveandaichat-ios"
-
 stages:
   - mirror
 
