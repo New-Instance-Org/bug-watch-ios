@@ -38,6 +38,7 @@ public final class BugWatch {
     private let sessionId: String
     private let crashSidecar: CrashContextSidecar
     private let sessionTracker: SessionTracker
+    private var hangDetector: HangDetector?
 
     /// `true` when the *previous* run ended in a native crash (set during
     /// `start` while processing the pending artifact). Useful for release-health.
@@ -120,6 +121,14 @@ public final class BugWatch {
         return instance
     }
 
+    /// Internal test seam: whether the A4 hang watchdog is currently armed. Not
+    /// part of the public SDK surface — lets A4 tests assert option gating through
+    /// the real boot flow.
+    var isHangDetectorActiveForTesting: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return hangDetector != nil
+    }
+
     private func boot() {
         // 1. BEFORE installing handlers: turn any crash from the *previous* run
         //    into a fatal event on the A1 pipe, then drop the artifact. Done
@@ -142,6 +151,12 @@ public final class BugWatch {
         // 3. Install crash capture (idempotent) now that A1 is fully initialized.
         if options.enabled {
             CrashReporter.install(directory: directory)
+        }
+
+        // 4. Start main-thread hang detection (A4) on a background watchdog. Gated
+        //    by both the master switch and its own option. Never runs on main.
+        if options.enabled && options.enableAppHangTracking {
+            startHangDetector()
         }
 
         // Resume delivery as soon as connectivity returns.
@@ -234,6 +249,54 @@ public final class BugWatch {
         return user
     }
 
+    /// Builds and starts the A4 main-thread hang watchdog. The detector pings the
+    /// main thread off a background queue and, on a stall ≥ threshold, hands us a
+    /// fully-built `.error` `AppHang` event which we redact and enqueue through the
+    /// normal pipe (bypassing sampling — a hang is a rare, important signal).
+    private func startHangDetector() {
+        let detector = HangDetector(
+            thresholdMs: options.appHangThresholdMs,
+            metaFactory: { [weak self] in self?.hangEventMeta() ?? HangDetector.EventMeta(
+                environment: "production",
+                sdk: SdkInfo(name: BugWatch.sdkName, version: BugWatch.sdkVersion)
+            ) },
+            emit: { [weak self] event in self?.enqueueHangEvent(event) }
+        )
+        hangDetector = detector
+        detector.start()
+    }
+
+    /// Snapshots the live scope (release/user) + static identity for stamping a
+    /// hang event, mirroring how ordinary captures resolve their context.
+    private func hangEventMeta() -> HangDetector.EventMeta {
+        lock.lock()
+        let snapshotUser = user
+        let snapshotRelease = release
+        lock.unlock()
+        return HangDetector.EventMeta(
+            release: snapshotRelease,
+            environment: options.environment,
+            device: device,
+            installId: installId,
+            sessionId: sessionId,
+            user: snapshotUser,
+            sdk: SdkInfo(name: BugWatch.sdkName, version: BugWatch.sdkVersion)
+        )
+    }
+
+    /// Enqueues a pre-built hang event through the delivery pipe. Like crash and
+    /// session events it bypasses sampling, still respects `enabled`, redacts the
+    /// user/tags, and nudges the worker.
+    private func enqueueHangEvent(_ event: BugWatchEvent) {
+        guard options.enabled else { return }
+        var enriched = event
+        enriched.user = redactor.redact(event.user)
+        enriched.tags = redactor.redact(event.tags)
+        queue.enqueue(enriched)
+        log("captured app-hang event \(enriched.eventId) (queued=\(queue.count))")
+        drainAsync()
+    }
+
     /// Persists the current session context to the crash sidecar so a crash in
     /// this run can be enriched on the next launch.
     private func writeCrashSidecar() {
@@ -257,6 +320,8 @@ public final class BugWatch {
     private func closeInstance() {
         flushTimer?.cancel()
         flushTimer = nil
+        hangDetector?.stop()
+        hangDetector = nil
         monitor.onBecameOnline = nil
         monitor.stop()
         // Restore the host's previous crash handlers; a clean shutdown is not a

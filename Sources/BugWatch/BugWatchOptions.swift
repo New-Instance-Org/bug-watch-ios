@@ -37,6 +37,13 @@ public struct BugWatchOptions: Sendable {
     /// run starts and a `crashed`/`exited` event for the prior run on the next
     /// launch. Session events bypass sampling so crash-free rates stay accurate.
     public var autoSessionTracking: Bool
+    /// Watch the main thread for stalls and emit a non-fatal `AppHang` event when
+    /// it is unresponsive for ≥ `appHangThresholdMs`. Hangs do not terminate the
+    /// app (distinct from crash capture). Runs entirely off the main thread.
+    public var enableAppHangTracking: Bool
+    /// How long (ms) the main thread must be continuously unresponsive before a
+    /// hang is reported. Only used when `enableAppHangTracking` is true.
+    public var appHangThresholdMs: Int
 
     public init(
         projectId: String,
@@ -53,7 +60,9 @@ public struct BugWatchOptions: Sendable {
         flushIntervalMs: Int = 5000,
         requestTimeoutMs: Int = 15000,
         retry: RetryPolicy = RetryPolicy(),
-        autoSessionTracking: Bool = true
+        autoSessionTracking: Bool = true,
+        enableAppHangTracking: Bool = true,
+        appHangThresholdMs: Int = 2000
     ) {
         self.projectId = projectId
         self.appSecret = appSecret
@@ -70,6 +79,8 @@ public struct BugWatchOptions: Sendable {
         self.requestTimeoutMs = requestTimeoutMs
         self.retry = retry
         self.autoSessionTracking = autoSessionTracking
+        self.enableAppHangTracking = enableAppHangTracking
+        self.appHangThresholdMs = appHangThresholdMs
     }
 
     /// Default keys redacted from event payloads (case-insensitive).
