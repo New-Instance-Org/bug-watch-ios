@@ -1,13 +1,15 @@
 import BugWatch
 import Foundation
 
-// A1 end-to-end probe. Drives the REAL BugWatch SDK (token signing + URLSession
-// NDJSON transport + persistent queue + delivery worker) against a running
-// BugWatch backend. Configure via env or edit the constants below.
+// A1/A2 end-to-end probe. Drives the REAL BugWatch SDK against a running
+// BugWatch backend.
 //
-//   swift run BugWatchE2EProbe
+//   swift run BugWatchE2EProbe            # normal: process pending crash + send a message, flush
+//   BW_CRASH=1 swift run BugWatchE2EProbe # crash phase: start, then raise SIGSEGV (handler writes artifact)
 //
-// Proves: capture -> sign -> POST /api/v1/bugwatch/ingest/mobile -> 202.
+// Crash E2E: run once with BW_CRASH=1 (process dies writing a crash artifact),
+// then run again with no env (start() processes the pending crash and uploads a
+// fatal event through the A1 delivery pipe).
 
 let projectId = ProcessInfo.processInfo.environment["BW_PROJECT_ID"] ?? "bwp_Gq4bFujpYe0"
 let appSecret = ProcessInfo.processInfo.environment["BW_APP_SECRET"] ?? "cP5TyERo8YHdvQNeG5Nw5YziT4w9bOavY1F0HFomEPg"
@@ -21,28 +23,28 @@ let bw = BugWatch.start(options: BugWatchOptions(
     appSecret: appSecret,
     endpoint: endpoint,
     environment: environment,
-    release: "a1-e2e-ios-0.0.1",
+    release: "a2-e2e-ios-0.0.1",
     debug: true,
     flushIntervalMs: 0
 ))
 
-bw.setUser(BugWatchUser(id: "e2e-ios-user", email: "e2e@example.com"))
-bw.setTag(key: "probe", value: "ios-macos")
-bw.addBreadcrumb(Breadcrumb(category: "e2e", message: "probe start"))
-
-let messageId = bw.captureMessage("A1 E2E iOS probe message", level: .info)
-let errorId = bw.capture(error: NSError(
-    domain: "E2EiOSError", code: 7,
-    userInfo: [NSLocalizedDescriptionKey: "hello from iOS E2E"]
-))
-print("E2E captured: message=\(messageId) error=\(errorId)")
-
-let done = DispatchSemaphore(value: 0)
-Task {
-    await bw.flush()
-    // Brief grace for any in-flight delivery to settle.
-    try? await Task.sleep(nanoseconds: 1_200_000_000)
-    print("E2E_PROBE_DONE")
-    done.signal()
+if ProcessInfo.processInfo.environment["BW_CRASH"] == "1" {
+    bw.setUser(BugWatchUser(id: "e2e-crash-user"))
+    bw.setTag(key: "scenario", value: "crash-probe")
+    bw.addBreadcrumb(Breadcrumb(category: "e2e", message: "about to crash"))
+    print("E2E_ABOUT_TO_CRASH")
+    fflush(stdout)
+    // Deliberate native crash → the SDK's signal handler writes a crash artifact.
+    raise(SIGSEGV)
+    print("E2E_SHOULD_NOT_REACH")
+} else {
+    // start() already processed any pending crash and enqueued it; flush delivers.
+    let done = DispatchSemaphore(value: 0)
+    Task {
+        await bw.flush()
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+        print("E2E_PROBE_DONE")
+        done.signal()
+    }
+    done.wait()
 }
-done.wait()
