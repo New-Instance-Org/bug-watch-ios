@@ -1,27 +1,20 @@
-stages:
-  - mirror
+# CI for the BugWatch iOS SDK.
+#
+# The full build / test / publish pipeline (and any GitHub mirror) is
+# configured when the BugWatch GitLab project and remotes are set up — a later
+# milestone. For now this declares a Swift build + test job intended for a
+# macOS runner.
 
-mirror_to_talktothelaw:
-  stage: mirror
-  image: alpine:latest
-  variables:
-    GIT_STRATEGY: clone
-    GIT_DEPTH: 0
-    MIRROR_URL: "git@github.com:talktothelaw/new-instance-livechat.git"
-  before_script:
-    - apk add --no-cache git openssh-client
-    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
-    - echo "$MIRROR_SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
-    - chmod 600 ~/.ssh/id_ed25519
-    - ssh-keyscan -t ed25519,rsa github.com >> ~/.ssh/known_hosts 2>/dev/null
-    - git config --global user.email "ci-mirror@gitlab.com"
-    - git config --global user.name "GitLab Mirror Bot"
+stages:
+  - test
+
+build_and_test:
+  stage: test
+  tags:
+    - macos
   script:
-    - git remote remove mirror 2>/dev/null || true
-    - git remote add mirror "$MIRROR_URL"
-    - git fetch origin "+refs/heads/*:refs/heads/*" "+refs/tags/*:refs/tags/*"
-    - git push --prune mirror "+refs/heads/*:refs/heads/*" "+refs/tags/*:refs/tags/*"
+    - swift build
+    - swift test
   rules:
     - if: $CI_PIPELINE_SOURCE == "push"
-    - if: $CI_PIPELINE_SOURCE == "web"
-    - if: $CI_PIPELINE_SOURCE == "api"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
