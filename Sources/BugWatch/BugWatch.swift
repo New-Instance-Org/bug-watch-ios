@@ -39,6 +39,8 @@ public final class BugWatch {
     private let crashSidecar: CrashContextSidecar
     private let sessionTracker: SessionTracker
     private var hangDetector: HangDetector?
+    private var lifecycleInstrumentation: LifecycleInstrumentation?
+    private var networkInstrumentationInstalled = false
 
     /// `true` when the *previous* run ended in a native crash (set during
     /// `start` while processing the pending artifact). Useful for release-health.
@@ -157,6 +159,17 @@ public final class BugWatch {
         //    by both the master switch and its own option. Never runs on main.
         if options.enabled && options.enableAppHangTracking {
             startHangDetector()
+        }
+
+        // 5. Auto-instrumentation (A5): enrich the breadcrumb buffer with app
+        //    lifecycle transitions and outbound network calls. Both feed the same
+        //    `addBreadcrumb` (redaction + crash-sidecar mirroring happen there) and
+        //    are gated by the master switch plus their own option.
+        if options.enabled && options.enableAutoBreadcrumbs {
+            startLifecycleInstrumentation()
+        }
+        if options.enabled && options.enableNetworkBreadcrumbs {
+            startNetworkInstrumentation()
         }
 
         // Resume delivery as soon as connectivity returns.
@@ -297,6 +310,56 @@ public final class BugWatch {
         drainAsync()
     }
 
+    /// Installs app-lifecycle breadcrumb instrumentation (A5). Each observed
+    /// `UIApplication` transition is turned into a breadcrumb and fed through the
+    /// normal `addBreadcrumb` (so it's redacted and mirrored into the crash sidecar
+    /// like any other crumb). No-op on platforms without UIKit.
+    private func startLifecycleInstrumentation() {
+        let instrumentation = LifecycleInstrumentation(sink: { [weak self] crumb in
+            self?.addBreadcrumb(crumb)
+        })
+        lifecycleInstrumentation = instrumentation
+        instrumentation.install()
+        log("lifecycle breadcrumbs installed")
+    }
+
+    /// Installs network breadcrumb instrumentation (A5): a global `URLProtocol` that
+    /// records one breadcrumb per outbound HTTP(S) request. The recorder is seeded
+    /// with this SDK's endpoint (so BugWatch's own ingest is excluded) and the host
+    /// allow/deny lists. Recorded crumbs go through `addBreadcrumb` for redaction.
+    private func startNetworkInstrumentation() {
+        let recorder = NetworkBreadcrumbRecorder(
+            endpoint: options.endpoint,
+            allowedHosts: options.networkBreadcrumbAllowedHosts,
+            deniedHosts: options.networkBreadcrumbDeniedHosts
+        )
+        NetworkInstrumentation.install(recorder: recorder, sink: { [weak self] crumb in
+            self?.addBreadcrumb(crumb)
+        })
+        networkInstrumentationInstalled = true
+        log("network breadcrumbs installed")
+    }
+
+    /// Internal test seam: whether lifecycle instrumentation is currently installed.
+    var isLifecycleInstrumentationActiveForTesting: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return lifecycleInstrumentation != nil
+    }
+
+    /// Internal test seam: whether network instrumentation is currently installed.
+    var isNetworkInstrumentationActiveForTesting: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return networkInstrumentationInstalled
+    }
+
+    /// Internal test seam: a snapshot of the live breadcrumb buffer. Lets A5 tests
+    /// assert that auto-instrumentation actually enriched the same buffer ordinary
+    /// events attach. Not part of the public SDK surface.
+    var breadcrumbsSnapshotForTesting: [Breadcrumb] {
+        lock.lock(); defer { lock.unlock() }
+        return breadcrumbs
+    }
+
     /// Persists the current session context to the crash sidecar so a crash in
     /// this run can be enriched on the next launch.
     private func writeCrashSidecar() {
@@ -322,6 +385,14 @@ public final class BugWatch {
         flushTimer = nil
         hangDetector?.stop()
         hangDetector = nil
+        // Tear down A5 auto-instrumentation: stop observing lifecycle notifications
+        // and unregister the network URLProtocol so it stops intercepting requests.
+        lifecycleInstrumentation?.uninstall()
+        lifecycleInstrumentation = nil
+        if networkInstrumentationInstalled {
+            NetworkInstrumentation.uninstall()
+            networkInstrumentationInstalled = false
+        }
         monitor.onBecameOnline = nil
         monitor.stop()
         // Restore the host's previous crash handlers; a clean shutdown is not a
