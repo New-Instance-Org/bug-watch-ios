@@ -64,6 +64,14 @@ public struct BugWatchEvent: Codable, Sendable, Equatable {
     public var sdk: SdkInfo
     public var traceId: String?
     public var spanId: String?
+    /// Originating platform — always "ios" for this SDK.
+    public var platform: String?
+    /// Stable per-install identifier (UUID persisted in UserDefaults).
+    public var installId: String?
+    /// Identifier for the current SDK session (one per `start`).
+    public var sessionId: String?
+    /// Device / runtime context.
+    public var device: DeviceInfo?
 
     public init(
         eventId: String,
@@ -79,7 +87,11 @@ public struct BugWatchEvent: Codable, Sendable, Equatable {
         breadcrumbs: [Breadcrumb]? = nil,
         sdk: SdkInfo,
         traceId: String? = nil,
-        spanId: String? = nil
+        spanId: String? = nil,
+        platform: String? = nil,
+        installId: String? = nil,
+        sessionId: String? = nil,
+        device: DeviceInfo? = nil
     ) {
         self.eventId = eventId
         self.time = time
@@ -95,5 +107,9 @@ public struct BugWatchEvent: Codable, Sendable, Equatable {
         self.sdk = sdk
         self.traceId = traceId
         self.spanId = spanId
+        self.platform = platform
+        self.installId = installId
+        self.sessionId = sessionId
+        self.device = device
     }
 }
