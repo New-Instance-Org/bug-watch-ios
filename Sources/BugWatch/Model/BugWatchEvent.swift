@@ -47,6 +47,23 @@ public struct SdkInfo: Codable, Sendable, Equatable {
     }
 }
 
+/// Release-health session signal carried on a session event. One "session" is a
+/// single SDK run (`start` → terminate/crash). The backend aggregates these into
+/// crash-free session/user rates, so an event with a populated `session` is a
+/// session signal rather than an error report.
+public struct SessionInfo: Codable, Sendable, Equatable {
+    /// The session id this signal refers to (equals the run's `sessionId`).
+    public var id: String
+    /// Session outcome: `ok` (session opened/healthy), `crashed` (the prior run
+    /// ended in a native crash), or `exited` (the prior run ended cleanly).
+    public var status: String
+
+    public init(id: String, status: String) {
+        self.id = id
+        self.status = status
+    }
+}
+
 /// The on-the-wire BugWatch event. Field names match the NDJSON ingest
 /// contract shared by all BugWatch SDKs.
 public struct BugWatchEvent: Codable, Sendable, Equatable {
@@ -72,6 +89,9 @@ public struct BugWatchEvent: Codable, Sendable, Equatable {
     public var sessionId: String?
     /// Device / runtime context.
     public var device: DeviceInfo?
+    /// Release-health session signal. Non-nil only on session events emitted by
+    /// auto session tracking; nil on ordinary error/message/crash events.
+    public var session: SessionInfo?
 
     public init(
         eventId: String,
@@ -91,7 +111,8 @@ public struct BugWatchEvent: Codable, Sendable, Equatable {
         platform: String? = nil,
         installId: String? = nil,
         sessionId: String? = nil,
-        device: DeviceInfo? = nil
+        device: DeviceInfo? = nil,
+        session: SessionInfo? = nil
     ) {
         self.eventId = eventId
         self.time = time
@@ -111,5 +132,6 @@ public struct BugWatchEvent: Codable, Sendable, Equatable {
         self.installId = installId
         self.sessionId = sessionId
         self.device = device
+        self.session = session
     }
 }

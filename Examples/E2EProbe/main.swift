@@ -1,7 +1,7 @@
 import BugWatch
 import Foundation
 
-// A1/A2 end-to-end probe. Drives the REAL BugWatch SDK against a running
+// A1/A2/A3 end-to-end probe. Drives the REAL BugWatch SDK against a running
 // BugWatch backend.
 //
 //   swift run BugWatchE2EProbe            # normal: process pending crash + send a message, flush
@@ -10,6 +10,11 @@ import Foundation
 // Crash E2E: run once with BW_CRASH=1 (process dies writing a crash artifact),
 // then run again with no env (start() processes the pending crash and uploads a
 // fatal event through the A1 delivery pipe).
+//
+// A3 release-health rides along automatically (autoSessionTracking defaults on):
+// every start opens an `ok` session and finalizes the prior run's session as
+// `crashed` (after a BW_CRASH run) or `exited` (after a clean run) — watch the
+// "session <id> → ok|crashed|exited" diagnostic lines.
 
 let projectId = ProcessInfo.processInfo.environment["BW_PROJECT_ID"] ?? "bwp_Gq4bFujpYe0"
 let appSecret = ProcessInfo.processInfo.environment["BW_APP_SECRET"] ?? "cP5TyERo8YHdvQNeG5Nw5YziT4w9bOavY1F0HFomEPg"

@@ -37,6 +37,7 @@ public final class BugWatch {
     private let installId: String
     private let sessionId: String
     private let crashSidecar: CrashContextSidecar
+    private let sessionTracker: SessionTracker
 
     /// `true` when the *previous* run ended in a native crash (set during
     /// `start` while processing the pending artifact). Useful for release-health.
@@ -51,15 +52,26 @@ public final class BugWatch {
 
     private var flushTimer: DispatchSourceTimer?
 
-    private init(options: BugWatchOptions) {
+    /// SDK working directory for the queue / crash sidecar / session descriptor.
+    /// Defaults to the shared Application-Support namespace; overridable only via
+    /// the internal test seam so facade tests run against an isolated directory.
+    private let directory: URL
+
+    private init(options: BugWatchOptions, directory: URL? = nil) {
         self.options = options
         self.release = options.release
-        self.queue = PersistentEventQueue(maxQueueSize: options.maxQueueSize)
+        let dir = directory ?? CrashContextSidecar.defaultDirectory()
+        self.directory = dir
+        self.queue = PersistentEventQueue(
+            fileURL: dir.appendingPathComponent("pending-events.ndjson", isDirectory: false),
+            maxQueueSize: options.maxQueueSize
+        )
         self.redactor = Redactor(sensitiveFields: options.sensitiveFields)
         self.device = DeviceContext.collect()
         self.installId = DeviceContext.installId()
         self.sessionId = "bw_s_" + UUID().uuidString.lowercased()
-        self.crashSidecar = CrashContextSidecar()
+        self.crashSidecar = CrashContextSidecar(directory: dir)
+        self.sessionTracker = SessionTracker(directory: dir)
 
         let signer = TokenSigner(appSecret: options.appSecret)
         self.signer = signer
@@ -92,8 +104,16 @@ public final class BugWatch {
     /// instance without reconfiguring.
     @discardableResult
     public static func start(options: BugWatchOptions) -> BugWatch {
+        start(options: options, directory: nil)
+    }
+
+    /// Internal test seam: like `start(options:)` but pins the SDK working
+    /// directory so tests can drive the real boot flow against an isolated queue /
+    /// sidecar / session descriptor. Not part of the public SDK surface.
+    @discardableResult
+    static func start(options: BugWatchOptions, directory: URL?) -> BugWatch {
         if let existing = shared { return existing }
-        let instance = BugWatch(options: options)
+        let instance = BugWatch(options: options, directory: directory)
         shared = instance
         instance.boot()
         instance.log("started (env=\(options.environment), release=\(options.release ?? "-"), session=\(instance.sessionId))")
@@ -104,8 +124,15 @@ public final class BugWatch {
         // 1. BEFORE installing handlers: turn any crash from the *previous* run
         //    into a fatal event on the A1 pipe, then drop the artifact. Done
         //    first so a crash-on-launch from re-installing handlers can't shadow
-        //    the report we already owe.
+        //    the report we already owe. This also resolves `crashedLastRun` /
+        //    `didCrashOnPreviousExecution`, which session finalization (next)
+        //    depends on to pick `crashed` vs `exited` for the prior run.
         processPendingCrash()
+
+        // 1b. Release health (A3): finalize the PRIOR run's session, then open
+        //     this run's. MUST run after processPendingCrash so the prior
+        //     session's terminal status reflects whether that run crashed.
+        handleSessionsOnBoot()
 
         // 2. Write the context sidecar for *this* session so the next launch can
         //    enrich a crash, and start a fresh breadcrumb ring.
@@ -114,7 +141,7 @@ public final class BugWatch {
 
         // 3. Install crash capture (idempotent) now that A1 is fully initialized.
         if options.enabled {
-            CrashReporter.install(directory: CrashContextSidecar.defaultDirectory())
+            CrashReporter.install(directory: directory)
         }
 
         // Resume delivery as soon as connectivity returns.
@@ -133,7 +160,7 @@ public final class BugWatch {
     /// deletes the artifact so it can never be double-reported. Best-effort —
     /// never throws into the host.
     private func processPendingCrash() {
-        let dir = CrashContextSidecar.defaultDirectory()
+        let dir = directory
         let processed = CrashReporter.processPending(
             directory: dir,
             sidecar: crashSidecar,
@@ -152,6 +179,59 @@ public final class BugWatch {
         )
         crashedLastRun = processed
         Self.persistCrashedLastRun(processed)
+    }
+
+    /// Release-health session handling at boot (A3). Two phases, in order:
+    ///
+    /// 1. **Finalize the prior run** — if a persisted session from a previous run
+    ///    exists, emit one terminal session event for *its* id with status
+    ///    `crashed` when this boot's `processPendingCrash` recovered a crash
+    ///    (`crashedLastRun`), else `exited`. Then delete the persisted descriptor
+    ///    so it can never be finalized twice. The terminal event carries the
+    ///    prior run's release/environment (read from the descriptor), not this
+    ///    run's.
+    /// 2. **Open this run** — persist this run's descriptor and emit an `ok`
+    ///    session event for the current `sessionId`.
+    ///
+    /// No-op when `autoSessionTracking` is off. Best-effort; never throws into the
+    /// host. Must run AFTER `processPendingCrash` (see `boot`).
+    private func handleSessionsOnBoot() {
+        guard options.autoSessionTracking else { return }
+        let context = SessionTracker.BootContext(
+            newSessionId: sessionId,
+            release: release,
+            environment: options.environment,
+            device: device,
+            installId: installId,
+            user: currentUserSnapshot(),
+            sdk: SdkInfo(name: BugWatch.sdkName, version: BugWatch.sdkVersion)
+        )
+        sessionTracker.runBoot(crashedLastRun: crashedLastRun, context: context) { [weak self] event in
+            guard let self else { return }
+            self.enqueueSessionEvent(event)
+            if let s = event.session {
+                self.log("session \(s.id) → \(s.status)")
+            }
+        }
+    }
+
+    /// Enqueues a pre-built session event through the normal delivery pipe but
+    /// **bypassing sampling** — sessions must never be sampled out or crash-free
+    /// rates would be wrong. Still respects `enabled`, redacts the user, and
+    /// nudges the worker.
+    private func enqueueSessionEvent(_ event: BugWatchEvent) {
+        guard options.enabled else { return }
+        var enriched = event
+        enriched.user = redactor.redact(event.user)
+        queue.enqueue(enriched)
+        drainAsync()
+    }
+
+    /// Thread-safe snapshot of the current scope user (used to stamp session
+    /// events with the same user identity as ordinary events).
+    private func currentUserSnapshot() -> BugWatchUser? {
+        lock.lock(); defer { lock.unlock() }
+        return user
     }
 
     /// Persists the current session context to the crash sidecar so a crash in
@@ -183,6 +263,9 @@ public final class BugWatch {
         // crash, so drop the sidecar so it can't mis-enrich a future report.
         CrashReporter.uninstall()
         crashSidecar.clear()
+        // Drop the persisted session descriptor too: an explicit close is a clean
+        // teardown, so the next launch shouldn't finalize a phantom session for it.
+        sessionTracker.clear()
         log("closed")
     }
 

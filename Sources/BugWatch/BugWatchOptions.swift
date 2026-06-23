@@ -33,6 +33,10 @@ public struct BugWatchOptions: Sendable {
     public var requestTimeoutMs: Int
     /// Retry policy for failed ingest requests.
     public var retry: RetryPolicy
+    /// Emit release-health session signals (Sentry-style): an `ok` event when a
+    /// run starts and a `crashed`/`exited` event for the prior run on the next
+    /// launch. Session events bypass sampling so crash-free rates stay accurate.
+    public var autoSessionTracking: Bool
 
     public init(
         projectId: String,
@@ -48,7 +52,8 @@ public struct BugWatchOptions: Sendable {
         batchSize: Int = 50,
         flushIntervalMs: Int = 5000,
         requestTimeoutMs: Int = 15000,
-        retry: RetryPolicy = RetryPolicy()
+        retry: RetryPolicy = RetryPolicy(),
+        autoSessionTracking: Bool = true
     ) {
         self.projectId = projectId
         self.appSecret = appSecret
@@ -64,6 +69,7 @@ public struct BugWatchOptions: Sendable {
         self.flushIntervalMs = flushIntervalMs
         self.requestTimeoutMs = requestTimeoutMs
         self.retry = retry
+        self.autoSessionTracking = autoSessionTracking
     }
 
     /// Default keys redacted from event payloads (case-insensitive).
