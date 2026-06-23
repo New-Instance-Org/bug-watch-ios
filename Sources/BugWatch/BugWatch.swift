@@ -431,6 +431,82 @@ public final class BugWatch {
         enqueue(level: level, message: message, exception: nil)
     }
 
+    // MARK: Wrapper capture (RN / Flutter)
+
+    /// Submit a PRE-BUILT exception that a cross-platform wrapper (React Native,
+    /// Flutter) has already normalized on its own runtime — including a real
+    /// stacktrace from the wrapper's language (e.g. a Hermes/JSC JS stack) and the
+    /// wrapper's own `platform` tag (e.g. `"react-native"`). The exception is
+    /// enqueued through the SAME delivery pipe as native captures (full device /
+    /// session / breadcrumb / scope enrichment), but the event's `platform`
+    /// **overrides** this SDK's default `"ios"` so the backend symbolicates it with
+    /// the right artifact (a JS source-map rather than an iOS dSYM).
+    ///
+    /// `frames` is an ordered array of loosely-typed frame dictionaries; each entry
+    /// maps the keys `filename` (String), `function` (String), `lineno` (Int),
+    /// `colno` (Int), and `in_app` (Bool) onto a `StackFrame`. Unknown / missing
+    /// keys are tolerated (the field is left nil). Returns the generated event id.
+    @discardableResult
+    public static func captureWrapperException(
+        type: String,
+        value: String,
+        frames: [[String: Any]],
+        level: Severity = .error,
+        platform: String
+    ) -> String? {
+        shared?.captureWrapperException(type: type, value: value, frames: frames, level: level, platform: platform)
+    }
+
+    @discardableResult
+    public func captureWrapperException(
+        type: String,
+        value: String,
+        frames: [[String: Any]],
+        level: Severity = .error,
+        platform: String
+    ) -> String {
+        let stacktrace = frames.map { Self.stackFrame(from: $0) }
+        let exception = NormalizedException(
+            type: type,
+            value: value,
+            stacktrace: stacktrace.isEmpty ? nil : stacktrace
+        )
+        return enqueue(level: level, message: nil, exception: exception, platform: platform)
+    }
+
+    /// Maps one wrapper-supplied frame dictionary onto a `StackFrame`. Tolerant of
+    /// missing keys and of numeric values arriving as `NSNumber` (the JS bridge
+    /// boxes all numbers) or native `Int`.
+    private static func stackFrame(from dict: [String: Any]) -> StackFrame {
+        StackFrame(
+            filename: dict["filename"] as? String,
+            function: dict["function"] as? String,
+            lineno: intValue(dict["lineno"]),
+            colno: intValue(dict["colno"]),
+            inApp: boolValue(dict["in_app"])
+        )
+    }
+
+    /// Reads an Int from a value that may be an `Int`, a bridged `NSNumber`, or a
+    /// numeric `String`. Returns nil when not a finite integer.
+    private static func intValue(_ any: Any?) -> Int? {
+        switch any {
+        case let n as Int: return n
+        case let n as NSNumber: return n.intValue
+        case let s as String: return Int(s)
+        default: return nil
+        }
+    }
+
+    /// Reads a Bool from a value that may be a `Bool` or a bridged `NSNumber`.
+    private static func boolValue(_ any: Any?) -> Bool? {
+        switch any {
+        case let b as Bool: return b
+        case let n as NSNumber: return n.boolValue
+        default: return nil
+        }
+    }
+
     // MARK: Scope
 
     public static func setUser(_ user: BugWatchUser?) { shared?.setUser(user) }
@@ -490,7 +566,7 @@ public final class BugWatch {
     // MARK: Internals
 
     @discardableResult
-    private func enqueue(level: Severity, message: String?, exception: NormalizedException?) -> String {
+    private func enqueue(level: Severity, message: String?, exception: NormalizedException?, platform: String = "ios") -> String {
         let id = "bw_e_" + UUID().uuidString.lowercased()
         guard options.enabled else { return id }
 
@@ -526,13 +602,13 @@ public final class BugWatch {
             user: redactedUser,
             breadcrumbs: redactedCrumbs,
             sdk: SdkInfo(name: BugWatch.sdkName, version: BugWatch.sdkVersion),
-            platform: "ios",
+            platform: platform,
             installId: installId,
             sessionId: sessionId,
             device: device
         )
         queue.enqueue(event)
-        log("captured \(level) event \(id) (queued=\(queue.count))")
+        log("captured \(level) event \(id) (queued=\(queue.count), platform=\(platform))")
         drainAsync()
         return id
     }
