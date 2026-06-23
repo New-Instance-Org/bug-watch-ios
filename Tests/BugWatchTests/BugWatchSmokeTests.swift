@@ -7,8 +7,16 @@ final class BugWatchSmokeTests: XCTestCase {
         super.tearDown()
     }
 
-    func testStartAndCaptureReturnEventIds() {
-        let bw = BugWatch.start(options: BugWatchOptions(projectKey: "key:secret", debug: true))
+    func testStartAndCaptureReturnEventIds() async {
+        let bw = BugWatch.start(options: BugWatchOptions(
+            projectId: "proj_abc123",
+            appSecret: "qHJ80UA2fcTfpi-yiobmScytk-YlkWkAYGPO6DGsvQk",
+            // Point at an unreachable port so delivery fails fast (retryable) and
+            // never blocks the test; we only assert the capture/enqueue path.
+            endpoint: "http://127.0.0.1:1",
+            debug: true,
+            flushIntervalMs: 0
+        ))
         let messageId = bw.captureMessage("hello", level: .info)
         XCTAssertTrue(messageId.hasPrefix("bw_e_"))
 
@@ -20,7 +28,7 @@ final class BugWatchSmokeTests: XCTestCase {
         bw.setContext("cart", value: "3 items")
         bw.setRelease("1.0.0+1")
         bw.addBreadcrumb(Breadcrumb(category: "nav", message: "opened checkout"))
-        bw.flush()
+        await bw.flush()
     }
 
     func testStaticForwardersAreNoOpBeforeStart() {
@@ -32,5 +40,25 @@ final class BugWatchSmokeTests: XCTestCase {
     func testSeverityOrdering() {
         XCTAssertTrue(Severity.warn < Severity.error)
         XCTAssertEqual(Severity.fatal.rawValue, 60)
+    }
+
+    func testStartIsIdempotent() {
+        let a = BugWatch.start(options: BugWatchOptions(projectId: "p", appSecret: "s", flushIntervalMs: 0))
+        let b = BugWatch.start(options: BugWatchOptions(projectId: "other", appSecret: "x", flushIntervalMs: 0))
+        XCTAssertTrue(a === b)
+    }
+
+    func testDisabledSDKDoesNotPersist() async {
+        // A disabled SDK still returns ids but enqueues nothing.
+        let q = PersistentEventQueue(
+            fileURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent("bw-disabled-\(UUID().uuidString)")
+                .appendingPathComponent("p.ndjson"),
+            maxQueueSize: 10
+        )
+        XCTAssertEqual(q.count, 0)
+        let bw = BugWatch.start(options: BugWatchOptions(projectId: "p", appSecret: "s", enabled: false, flushIntervalMs: 0))
+        let id = bw.captureMessage("nope")
+        XCTAssertTrue(id.hasPrefix("bw_e_"))
     }
 }

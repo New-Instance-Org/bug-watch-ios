@@ -3,9 +3,11 @@
 Native Swift SDK for the [BugWatch](https://newinstance.cloud) observability
 platform. Capture crashes, handled errors, and logs from your iOS app.
 
-> **Status:** early skeleton. The public API is stable; event **delivery**,
-> crash/ANR capture, device context, and session tracking are being
-> implemented. Today, captured events are normalized and queued in memory.
+> **Status:** captured events are now **delivered** — they are normalized,
+> redacted, persisted to a disk-backed queue, and POSTed to the BugWatch mobile
+> ingest endpoint with a locally-signed, short-lived token (your `appSecret`
+> never leaves the device). Device + install/session context are attached
+> automatically. Crash/ANR capture is the next milestone.
 
 ## Requirements
 
@@ -32,7 +34,8 @@ pod 'BugWatch', '~> 0.1'
 import BugWatch
 
 BugWatch.start(options: BugWatchOptions(
-    projectKey: "<keyId>:<secret>",
+    projectId: "<your-project-id>",
+    appSecret: "<your-project-app-secret>",
     environment: "production",
     release: "1.0.0+1"
 ))
@@ -50,16 +53,36 @@ BugWatch.setUser(BugWatchUser(id: "customer-id", email: "customer@example.com"))
 BugWatch.setTag(key: "payment_provider", value: "paystack")
 BugWatch.addBreadcrumb(Breadcrumb(category: "ui", message: "Tapped checkout"))
 
-// Flush before shutdown
-BugWatch.flush()
+// Flush before shutdown (awaitable)
+await BugWatch.flush()
+// …or fire-and-forget with an optional completion:
+BugWatch.flush { /* done */ }
 ```
+
+> `appSecret` is your project's signing secret. The SDK uses it only to sign a
+> short-lived `x-bugwatch-token` locally (HMAC-SHA256) — **the secret is never
+> transmitted**.
 
 ## Configuration
 
-`BugWatchOptions` fields: `projectKey` (required), `endpoint`
-(default `https://api.newinstance.cloud`), `environment`, `release`,
-`enabled`, `debug`, `sampleRate`, `sensitiveFields`, `maxQueueSize`,
-`batchSize`, `flushIntervalMs`, `requestTimeoutMs`, `retry`.
+`BugWatchOptions` fields: `projectId` (required), `appSecret` (required),
+`endpoint` (default `https://api.newinstance.cloud`), `environment`
+(default `"production"`), `release`, `enabled`, `debug`, `sampleRate`,
+`sensitiveFields`, `maxQueueSize`, `batchSize`, `flushIntervalMs`,
+`requestTimeoutMs`, `retry`.
+
+## How delivery works
+
+1. Each `capture*` builds an event with device, install id, session id, release,
+   environment, tags, user, and breadcrumbs — then redacts any
+   `sensitiveFields` values and appends it to a disk-backed NDJSON queue
+   (survives app restarts, bounded by `maxQueueSize` + max age).
+2. A serial worker drains the queue in `batchSize` chunks, signs a fresh token,
+   and POSTs `application/x-ndjson` to
+   `{endpoint}/api/v1/bugwatch/ingest/mobile`.
+3. Delivery is retried with exponential backoff on `5xx`/`429`/network errors
+   (`retry` policy), runs on the `flushIntervalMs` timer, and resumes
+   automatically when connectivity returns.
 
 ## Diagnostics
 

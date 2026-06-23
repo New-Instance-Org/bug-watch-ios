@@ -14,9 +14,17 @@ let package = Package(
             targets: ["BugWatch"]
         ),
     ],
+    dependencies: [
+        // Provides `import Crypto` (HMAC-SHA256). On Apple platforms swift-crypto
+        // forwards to the system CryptoKit; on Linux it ships its own backend.
+        .package(url: "https://github.com/apple/swift-crypto.git", "2.0.0"..<"4.0.0"),
+    ],
     targets: [
         .target(
             name: "BugWatch",
+            dependencies: [
+                .product(name: "Crypto", package: "swift-crypto"),
+            ],
             path: "Sources/BugWatch"
         ),
         .testTarget(

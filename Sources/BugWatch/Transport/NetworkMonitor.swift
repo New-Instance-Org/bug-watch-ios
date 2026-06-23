@@ -10,6 +10,11 @@ import Combine
 final class NetworkMonitor: ObservableObject {
     @Published private(set) var isOnline: Bool = true
 
+    /// Invoked (on the main queue) whenever connectivity flips to online. The
+    /// delivery pipeline uses this to resume draining as soon as the network
+    /// comes back.
+    var onBecameOnline: (() -> Void)?
+
     private let monitor = NWPathMonitor()
     private let queue = DispatchQueue(label: "cloud.newinstance.bugwatch.network", qos: .utility)
     private var started = false
@@ -20,7 +25,12 @@ final class NetworkMonitor: ObservableObject {
         monitor.pathUpdateHandler = { [weak self] path in
             let online = path.status == .satisfied
             DispatchQueue.main.async {
-                self?.isOnline = online
+                guard let self else { return }
+                let wasOnline = self.isOnline
+                self.isOnline = online
+                if online && !wasOnline {
+                    self.onBecameOnline?()
+                }
             }
         }
         monitor.start(queue: queue)

@@ -3,12 +3,16 @@ import Foundation
 /// Configuration for the BugWatch SDK. Mirrors the canonical options used by
 /// the JavaScript (`@newinstance/bugwatch`) and PHP SDKs.
 public struct BugWatchOptions: Sendable {
-    /// Central ingest key `<keyId>:<secret>` (sk_test_… / sk_live_…).
-    public var projectKey: String
+    /// BugWatch project public id — sent as the token `pid` claim.
+    public var projectId: String
+    /// Per-project secret (base64url string) used as the HMAC key when signing
+    /// the ingest token. **Never transmitted** — only the signed token is sent.
+    public var appSecret: String
     /// Ingest API base URL. Override only for self-hosted / dev backends.
     public var endpoint: String
-    /// Informational environment tag (e.g. "production", "staging").
-    public var environment: String?
+    /// Environment tag (e.g. "production", "staging") — sent as the token `env`
+    /// claim and stamped on every event.
+    public var environment: String
     /// Release / build identifier (e.g. "1.4.2+318").
     public var release: String?
     /// Master switch; when false the SDK collects and sends nothing.
@@ -31,9 +35,10 @@ public struct BugWatchOptions: Sendable {
     public var retry: RetryPolicy
 
     public init(
-        projectKey: String,
+        projectId: String,
+        appSecret: String,
         endpoint: String = "https://api.newinstance.cloud",
-        environment: String? = nil,
+        environment: String = "production",
         release: String? = nil,
         enabled: Bool = true,
         debug: Bool = false,
@@ -45,7 +50,8 @@ public struct BugWatchOptions: Sendable {
         requestTimeoutMs: Int = 15000,
         retry: RetryPolicy = RetryPolicy()
     ) {
-        self.projectKey = projectKey
+        self.projectId = projectId
+        self.appSecret = appSecret
         self.endpoint = endpoint
         self.environment = environment
         self.release = release

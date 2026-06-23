@@ -19,5 +19,8 @@ Pod::Spec.new do |s|
   }
 
   s.source_files  = "Sources/BugWatch/**/*.swift"
-  s.frameworks    = "Foundation", "Combine", "Network"
+  # CryptoKit (system, iOS 13+) backs HMAC token signing. The source imports
+  # swift-crypto's `Crypto` when present (SwiftPM) and falls back to CryptoKit
+  # otherwise, so the CocoaPods build needs no extra dependency.
+  s.frameworks    = "Foundation", "Combine", "Network", "CryptoKit"
 end
