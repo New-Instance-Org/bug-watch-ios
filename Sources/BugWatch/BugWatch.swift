@@ -16,6 +16,16 @@ public final class BugWatch {
     public static let sdkName = "bugwatch-ios"
     public static let sdkVersion = "0.1.0"
 
+    /// Whether the previous run ended in a native crash, read from a tiny
+    /// persisted flag. Available even before `start` (e.g. to gate release-health
+    /// reporting). Reflects the most recent processed crash.
+    public static var didCrashOnPreviousExecution: Bool {
+        UserDefaults(suiteName: DeviceContext.suiteName)?.bool(forKey: crashedLastRunKey) ?? false
+    }
+
+    /// UserDefaults key for the persisted previous-run-crashed flag.
+    private static let crashedLastRunKey = "bw_crashed_last_run"
+
     private let options: BugWatchOptions
     private let queue: PersistentEventQueue
     private let monitor = NetworkMonitor()
@@ -26,6 +36,11 @@ public final class BugWatch {
     private let device: DeviceInfo
     private let installId: String
     private let sessionId: String
+    private let crashSidecar: CrashContextSidecar
+
+    /// `true` when the *previous* run ended in a native crash (set during
+    /// `start` while processing the pending artifact). Useful for release-health.
+    public private(set) var crashedLastRun: Bool = false
 
     private let lock = NSLock()
     private var user: BugWatchUser?
@@ -44,6 +59,7 @@ public final class BugWatch {
         self.device = DeviceContext.collect()
         self.installId = DeviceContext.installId()
         self.sessionId = "bw_s_" + UUID().uuidString.lowercased()
+        self.crashSidecar = CrashContextSidecar()
 
         let signer = TokenSigner(appSecret: options.appSecret)
         self.signer = signer
@@ -85,14 +101,71 @@ public final class BugWatch {
     }
 
     private func boot() {
+        // 1. BEFORE installing handlers: turn any crash from the *previous* run
+        //    into a fatal event on the A1 pipe, then drop the artifact. Done
+        //    first so a crash-on-launch from re-installing handlers can't shadow
+        //    the report we already owe.
+        processPendingCrash()
+
+        // 2. Write the context sidecar for *this* session so the next launch can
+        //    enrich a crash, and start a fresh breadcrumb ring.
+        crashSidecar.resetBreadcrumbs()
+        writeCrashSidecar()
+
+        // 3. Install crash capture (idempotent) now that A1 is fully initialized.
+        if options.enabled {
+            CrashReporter.install(directory: CrashContextSidecar.defaultDirectory())
+        }
+
         // Resume delivery as soon as connectivity returns.
         monitor.onBecameOnline = { [weak self] in
             self?.drainAsync()
         }
         monitor.start()
         startFlushTimer()
-        // Attempt to deliver anything left over from a previous run.
+        // Attempt to deliver anything left over from a previous run (incl. the
+        // fatal event just enqueued from a crash).
         drainAsync()
+    }
+
+    /// Reads a pending crash artifact (if any), builds a `.fatal` event from it
+    /// plus the persisted sidecar context, enqueues it on the A1 pipe, then
+    /// deletes the artifact so it can never be double-reported. Best-effort —
+    /// never throws into the host.
+    private func processPendingCrash() {
+        let dir = CrashContextSidecar.defaultDirectory()
+        let processed = CrashReporter.processPending(
+            directory: dir,
+            sidecar: crashSidecar,
+            sdk: SdkInfo(name: BugWatch.sdkName, version: BugWatch.sdkVersion),
+            environmentFallback: options.environment,
+            enqueue: { [weak self] event in
+                guard let self else { return }
+                // A disabled SDK still clears the artifact but uploads nothing.
+                guard self.options.enabled else { return }
+                let redactedCrumbs = self.redactor.redact(event.breadcrumbs)
+                var enriched = event
+                enriched.breadcrumbs = redactedCrumbs
+                self.queue.enqueue(enriched)
+                self.log("recovered fatal crash event \(enriched.eventId) from previous run")
+            }
+        )
+        crashedLastRun = processed
+        Self.persistCrashedLastRun(processed)
+    }
+
+    /// Persists the current session context to the crash sidecar so a crash in
+    /// this run can be enriched on the next launch.
+    private func writeCrashSidecar() {
+        let context = CrashContextSidecar.Context(
+            installId: installId,
+            sessionId: sessionId,
+            release: release,
+            environment: options.environment,
+            device: device,
+            startedAt: Int64(Date().timeIntervalSince1970 * 1000)
+        )
+        crashSidecar.writeContext(context)
     }
 
     /// Stops the SDK and tears down the shared instance.
@@ -106,6 +179,10 @@ public final class BugWatch {
         flushTimer = nil
         monitor.onBecameOnline = nil
         monitor.stop()
+        // Restore the host's previous crash handlers; a clean shutdown is not a
+        // crash, so drop the sidecar so it can't mis-enrich a future report.
+        CrashReporter.uninstall()
+        crashSidecar.clear()
         log("closed")
     }
 
@@ -155,6 +232,9 @@ public final class BugWatch {
     public static func setRelease(_ release: String) { shared?.setRelease(release) }
     public func setRelease(_ release: String) {
         lock.lock(); self.release = release; lock.unlock()
+        // Keep the crash sidecar's release current so a later crash reports the
+        // release that was actually live when it happened.
+        writeCrashSidecar()
     }
 
     public static func addBreadcrumb(_ crumb: Breadcrumb) { shared?.addBreadcrumb(crumb) }
@@ -165,6 +245,11 @@ public final class BugWatch {
             breadcrumbs.removeFirst(breadcrumbs.count - 100)
         }
         lock.unlock()
+        // Mirror into the bounded crash sidecar (best-effort) so a crash carries
+        // the trail of what happened just before it. Redact first.
+        if let redacted = redactor.redact([crumb])?.first {
+            crashSidecar.appendBreadcrumb(redacted)
+        }
     }
 
     // MARK: Delivery
@@ -262,5 +347,12 @@ public final class BugWatch {
     private func log(_ line: String) {
         guard options.debug else { return }
         BugWatchDiagnosticLog.emit("[BugWatch] \(line)")
+    }
+
+    /// Persists the previous-run-crashed flag so `didCrashOnPreviousExecution`
+    /// can report it on subsequent launches.
+    private static func persistCrashedLastRun(_ value: Bool) {
+        let defaults = UserDefaults(suiteName: DeviceContext.suiteName) ?? .standard
+        defaults.set(value, forKey: crashedLastRunKey)
     }
 }
