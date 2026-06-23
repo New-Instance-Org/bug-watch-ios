@@ -33,6 +33,33 @@ public struct BugWatchOptions: Sendable {
     public var requestTimeoutMs: Int
     /// Retry policy for failed ingest requests.
     public var retry: RetryPolicy
+    /// Emit release-health session signals (Sentry-style): an `ok` event when a
+    /// run starts and a `crashed`/`exited` event for the prior run on the next
+    /// launch. Session events bypass sampling so crash-free rates stay accurate.
+    public var autoSessionTracking: Bool
+    /// Watch the main thread for stalls and emit a non-fatal `AppHang` event when
+    /// it is unresponsive for ≥ `appHangThresholdMs`. Hangs do not terminate the
+    /// app (distinct from crash capture). Runs entirely off the main thread.
+    public var enableAppHangTracking: Bool
+    /// How long (ms) the main thread must be continuously unresponsive before a
+    /// hang is reported. Only used when `enableAppHangTracking` is true.
+    public var appHangThresholdMs: Int
+    /// Automatically record **app-lifecycle** breadcrumbs (foreground/background
+    /// transitions, memory warnings) into the breadcrumb buffer that crash/error
+    /// events attach. No-op on platforms without UIKit.
+    public var enableAutoBreadcrumbs: Bool
+    /// Automatically record a **network** breadcrumb per outbound HTTP(S) request
+    /// (method, host, path, status, duration). Installs a global `URLProtocol`, so
+    /// it only covers `URLSession.shared` + sessions built from the default
+    /// configuration. BugWatch's own ingest requests are always excluded.
+    public var enableNetworkBreadcrumbs: Bool
+    /// Optional allow-list of hosts for network breadcrumbs. Empty = record every
+    /// host (except BugWatch's own ingest, which is always excluded). When
+    /// non-empty, only these hosts are recorded.
+    public var networkBreadcrumbAllowedHosts: [String]
+    /// Optional deny-list of hosts that are never recorded as network breadcrumbs.
+    /// Takes precedence over the allow-list.
+    public var networkBreadcrumbDeniedHosts: [String]
 
     public init(
         projectId: String,
@@ -48,7 +75,14 @@ public struct BugWatchOptions: Sendable {
         batchSize: Int = 50,
         flushIntervalMs: Int = 5000,
         requestTimeoutMs: Int = 15000,
-        retry: RetryPolicy = RetryPolicy()
+        retry: RetryPolicy = RetryPolicy(),
+        autoSessionTracking: Bool = true,
+        enableAppHangTracking: Bool = true,
+        appHangThresholdMs: Int = 2000,
+        enableAutoBreadcrumbs: Bool = true,
+        enableNetworkBreadcrumbs: Bool = true,
+        networkBreadcrumbAllowedHosts: [String] = [],
+        networkBreadcrumbDeniedHosts: [String] = []
     ) {
         self.projectId = projectId
         self.appSecret = appSecret
@@ -64,6 +98,13 @@ public struct BugWatchOptions: Sendable {
         self.flushIntervalMs = flushIntervalMs
         self.requestTimeoutMs = requestTimeoutMs
         self.retry = retry
+        self.autoSessionTracking = autoSessionTracking
+        self.enableAppHangTracking = enableAppHangTracking
+        self.appHangThresholdMs = appHangThresholdMs
+        self.enableAutoBreadcrumbs = enableAutoBreadcrumbs
+        self.enableNetworkBreadcrumbs = enableNetworkBreadcrumbs
+        self.networkBreadcrumbAllowedHosts = networkBreadcrumbAllowedHosts
+        self.networkBreadcrumbDeniedHosts = networkBreadcrumbDeniedHosts
     }
 
     /// Default keys redacted from event payloads (case-insensitive).
