@@ -3,16 +3,15 @@ import Network
 import Combine
 
 /// System-network availability tracker. Wraps `NWPathMonitor` and exposes
-/// an `@Published isOnline` so SDK code (subscription clients in
-/// particular) can pause reconnect loops while there's no usable network.
+/// an `@Published isOnline` so the delivery pipeline can pause retry loops
+/// while there's no usable network.
 ///
-/// Mirrors Android's `NetworkMonitor` semantics: `isOnline` only flips
-/// true when the path is satisfied AND not expensive-only / unsatisfied.
+/// `isOnline` only flips true when the path is satisfied.
 final class NetworkMonitor: ObservableObject {
     @Published private(set) var isOnline: Bool = true
 
     private let monitor = NWPathMonitor()
-    private let queue = DispatchQueue(label: "cloud.newinstance.liveandaichat.network", qos: .utility)
+    private let queue = DispatchQueue(label: "cloud.newinstance.bugwatch.network", qos: .utility)
     private var started = false
 
     func start() {

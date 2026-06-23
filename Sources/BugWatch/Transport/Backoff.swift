@@ -1,13 +1,13 @@
 import Foundation
 
-/// Exponential-with-jitter backoff calculator. Mirrors the Android and web
-/// formulas exactly: base = min(initial × 2^attempt, max), final delay is
-/// scaled by a [0.5, 1.0] jitter factor to spread reconnect storms.
+/// Exponential-with-jitter backoff calculator. base = min(initial × 2^attempt,
+/// max); the final delay is scaled by a [0.5, 1.0] jitter factor to spread
+/// retry storms across clients.
 enum Backoff {
     /// Returns the delay in **milliseconds** for the given attempt number.
     /// `attempt` starts at 0 for the first retry.
     static func delayMillis(
-        policy: ReconnectPolicy,
+        policy: RetryPolicy,
         attempt: Int,
         randomFactor: Double = .random(in: 0.5...1.0)
     ) -> Int64 {
