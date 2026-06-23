@@ -32,5 +32,11 @@ let package = Package(
             dependencies: ["BugWatch"],
             path: "Tests/BugWatchTests"
         ),
+        // Dev-only E2E probe: drives the real SDK against a running backend.
+        .executableTarget(
+            name: "BugWatchE2EProbe",
+            dependencies: ["BugWatch"],
+            path: "Examples/E2EProbe"
+        ),
     ]
 )
