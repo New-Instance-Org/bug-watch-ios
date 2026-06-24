@@ -452,9 +452,10 @@ public final class BugWatch {
         value: String,
         frames: [[String: Any]],
         level: Severity = .error,
-        platform: String
+        platform: String,
+        rawStacktrace: String? = nil
     ) -> String? {
-        shared?.captureWrapperException(type: type, value: value, frames: frames, level: level, platform: platform)
+        shared?.captureWrapperException(type: type, value: value, frames: frames, level: level, platform: platform, rawStacktrace: rawStacktrace)
     }
 
     @discardableResult
@@ -463,13 +464,15 @@ public final class BugWatch {
         value: String,
         frames: [[String: Any]],
         level: Severity = .error,
-        platform: String
+        platform: String,
+        rawStacktrace: String? = nil
     ) -> String {
         let stacktrace = frames.map { Self.stackFrame(from: $0) }
         let exception = NormalizedException(
             type: type,
             value: value,
-            stacktrace: stacktrace.isEmpty ? nil : stacktrace
+            stacktrace: stacktrace.isEmpty ? nil : stacktrace,
+            rawStacktrace: rawStacktrace
         )
         return enqueue(level: level, message: nil, exception: exception, platform: platform)
     }
