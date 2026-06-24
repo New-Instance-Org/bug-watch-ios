@@ -37,6 +37,16 @@ enum CrashReporter {
         case nsexception
     }
 
+    /// One parsed binary-image record from the `images:` section.
+    struct ImageRecord: Equatable {
+        var loadAddr: UInt64
+        var size: UInt64
+        var uuid: String   // normalized lowercase hyphenated UUID
+        var arch: String
+        var isMain: Bool
+        var name: String
+    }
+
     /// A parsed pending-crash artifact (either flavor).
     struct CrashArtifact: Equatable {
         var type: CrashType
@@ -52,6 +62,10 @@ enum CrashReporter {
         var time: Int64?
         /// Raw backtrace frame lines (as `backtrace_symbols_fd` emits them).
         var frames: [String]
+        /// Raw frame instruction addresses (payload v2; `[]` for legacy artifacts).
+        var frameAddrs: [UInt64] = []
+        /// Loaded Mach-O images (payload v2; `[]` for legacy artifacts).
+        var images: [ImageRecord] = []
     }
 
     // MARK: Paths
@@ -71,6 +85,9 @@ enum CrashReporter {
     /// First line of every signal artifact — lets the parser recognise/version it.
     static let signalMarker = "BUGWATCH-CRASH-SIGNAL-V1"
     static let nsExceptionMarker = "BUGWATCH-CRASH-NSEXCEPTION-V1"
+    /// Section markers for the structured (payload v2) sections.
+    static let addrsMarker = "addrs:"
+    static let imagesMarker = "images:"
 
     // MARK: Install
 
@@ -206,6 +223,24 @@ enum CrashReporter {
                     }
                 }
             }
+            // Structured (payload v2): raw frame instruction addresses, one hex per
+            // line, then the loaded binary-image table. Both stay async-signal-safe
+            // (pre-resolved buffer + pointer arithmetic + write only).
+            writeCString(fd, CrashReporter.addrsMarkerC)
+            writeNewline(fd)
+            if count > 0 {
+                backtraceBuffer.withUnsafeBufferPointer { ptr in
+                    var k = 0
+                    while k < Int(count) {
+                        sigSafeWriteHex(fd, UInt(bitPattern: ptr[k]))
+                        writeNewline(fd)
+                        k += 1
+                    }
+                }
+            }
+            writeCString(fd, CrashReporter.imagesMarkerC)
+            writeNewline(fd)
+            writeBinaryImages(fd)
             close(fd)
         }
         // Restore the previous (or default) handler for this signal, then re-raise
@@ -250,6 +285,8 @@ enum CrashReporter {
     private static let signalPrefixC: [CChar] = "signal=".utf8CString.map { $0 }
     private static let timePrefixC: [CChar] = "time=".utf8CString.map { $0 }
     private static let framesMarkerC: [CChar] = "frames:".utf8CString.map { $0 }
+    private static let addrsMarkerC: [CChar] = "addrs:".utf8CString.map { $0 }
+    private static let imagesMarkerC: [CChar] = "images:".utf8CString.map { $0 }
 
     // MARK: NSException handling
 
@@ -359,18 +396,29 @@ enum CrashReporter {
         var reason: String?
         var time: Int64?
         var frames: [String] = []
-        var inFrames = false
+        var frameAddrs: [UInt64] = []
+        var images: [ImageRecord] = []
+
+        enum Section { case none, frames, addrs, images }
+        var section: Section = .none
 
         for line in lines.dropFirst() {
-            if inFrames {
+            if line == "frames:" { section = .frames; continue }
+            if line == addrsMarker { section = .addrs; continue }
+            if line == imagesMarker { section = .images; continue }
+            switch section {
+            case .frames:
                 if !line.isEmpty { frames.append(line) }
-                continue
+            case .addrs:
+                if !line.isEmpty, let a = parseHexU64(line) { frameAddrs.append(a) }
+            case .images:
+                if !line.isEmpty, let img = parseImageLine(line) { images.append(img) }
+            case .none:
+                if let v = value(of: "signal", in: line) { signal = Int32(v) }
+                else if let v = value(of: "time", in: line) { time = Int64(v) }
+                else if let v = value(of: "name", in: line) { name = v }
+                else if let v = value(of: "reason", in: line) { reason = v }
             }
-            if line == "frames:" { inFrames = true; continue }
-            if let v = value(of: "signal", in: line) { signal = Int32(v) }
-            else if let v = value(of: "time", in: line) { time = Int64(v) }
-            else if let v = value(of: "name", in: line) { name = v }
-            else if let v = value(of: "reason", in: line) { reason = v }
         }
 
         return CrashArtifact(
@@ -380,8 +428,40 @@ enum CrashReporter {
             name: name,
             reason: reason,
             time: time,
-            frames: frames
+            frames: frames,
+            frameAddrs: frameAddrs,
+            images: images
         )
+    }
+
+    /// Parses a `0x…` (or bare) hex line into a `UInt64`, preserving 64-bit precision.
+    static func parseHexU64(_ line: String) -> UInt64? {
+        let s = (line.hasPrefix("0x") || line.hasPrefix("0X")) ? String(line.dropFirst(2)) : line
+        return UInt64(s, radix: 16)
+    }
+
+    /// Parses one `images:` line — `<loadAddr> <size> <uuid32> <arch> <0|1> <name…>`.
+    /// The name (last field) may contain spaces, so we split at most 5 times.
+    static func parseImageLine(_ line: String) -> ImageRecord? {
+        let parts = line.split(separator: " ", maxSplits: 5, omittingEmptySubsequences: true)
+        guard parts.count >= 5 else { return nil }
+        return ImageRecord(
+            loadAddr: parseHexU64(String(parts[0])) ?? 0,
+            size: parseHexU64(String(parts[1])) ?? 0,
+            uuid: normalizeUUID32(String(parts[2])),
+            arch: String(parts[3]),
+            isMain: parts[4] == "1",
+            name: parts.count >= 6 ? String(parts[5]) : ""
+        )
+    }
+
+    /// Normalizes 32 raw hex chars into a lowercase hyphenated UUID (8-4-4-4-12).
+    static func normalizeUUID32(_ hex: String) -> String {
+        let h = hex.lowercased()
+        guard h.count == 32 else { return h }
+        let a = Array(h)
+        func s(_ i: Int, _ j: Int) -> String { String(a[i..<j]) }
+        return "\(s(0, 8))-\(s(8, 12))-\(s(12, 16))-\(s(16, 20))-\(s(20, 32))"
     }
 
     /// Extracts the value of a `key=value` line, else `nil`.
@@ -446,6 +526,30 @@ enum CrashReporter {
 
         let exception = NormalizedException(type: type, value: value, stacktrace: stack)
 
+        // Structured native debug-meta (payload v2). Maps the parsed image table +
+        // raw frame addresses onto the Symbolicator-ready event fields. The raw
+        // backtrace line is preserved per-frame in `rawSymbol` (and in `exception`).
+        let binaryImages: [BinaryImage]? = artifact.images.isEmpty ? nil : artifact.images.map { img in
+            BinaryImage(
+                name: img.name,
+                debugId: img.uuid,
+                arch: img.arch,
+                imageAddr: "0x" + String(img.loadAddr, radix: 16),
+                imageSize: img.size == 0 ? nil : img.size,
+                isMainImage: img.isMain
+            )
+        }
+        let nativeFrames: [NativeFrame]? = artifact.frameAddrs.isEmpty ? nil : artifact.frameAddrs.enumerated().map { idx, addr in
+            let raw: String? = idx < artifact.frames.count ? artifact.frames[idx] : nil
+            return NativeFrame(
+                frameIndex: idx,
+                instructionAddr: "0x" + String(addr, radix: 16),
+                rawSymbol: raw,
+                inApp: raw.map { guessInApp($0) }
+            )
+        }
+        let payloadVersion: Int? = (binaryImages != nil || nativeFrames != nil) ? 2 : nil
+
         // Prefer the crash time from the artifact; fall back to now.
         let millis: Int64 = artifact.time.map { $0 * 1000 } ?? Int64(now.timeIntervalSince1970 * 1000)
 
@@ -467,7 +571,10 @@ enum CrashReporter {
             platform: "ios",
             installId: context?.installId,
             sessionId: context?.sessionId,
-            device: context?.device
+            device: context?.device,
+            binaryImages: binaryImages,
+            nativeStacktrace: nativeFrames,
+            payloadVersion: payloadVersion
         )
     }
 
@@ -524,7 +631,9 @@ enum CrashReporter {
         url: URL,
         signal: Int32,
         time: Int64,
-        frames: [String]
+        frames: [String],
+        frameAddrs: [UInt64] = [],
+        images: [BinaryImage] = []
     ) {
         let dir = url.deletingLastPathComponent()
         let fm = FileManager.default
@@ -545,6 +654,21 @@ enum CrashReporter {
             let c = f.utf8CString.map { $0 }
             writeCString(fd, c)
             writeNewline(fd)
+        }
+        // Structured sections — emitted only when present, so a default call still
+        // produces a legacy (v1) artifact for back-compat tests.
+        if !frameAddrs.isEmpty {
+            writeCString(fd, addrsMarkerC); writeNewline(fd)
+            for a in frameAddrs { sigSafeWriteHex(fd, UInt(a)); writeNewline(fd) }
+        }
+        if !images.isEmpty {
+            writeCString(fd, imagesMarkerC); writeNewline(fd)
+            for img in images {
+                let uuid32 = img.debugId.replacingOccurrences(of: "-", with: "")
+                let line = "\(img.imageAddr) 0x\(String(img.imageSize ?? 0, radix: 16)) \(uuid32) \(img.arch) \(img.isMainImage == true ? "1" : "0") \(img.name)"
+                let c = line.utf8CString.map { $0 }
+                writeCString(fd, c); writeNewline(fd)
+            }
         }
         close(fd)
     }

@@ -42,6 +42,70 @@ public struct NormalizedException: Codable, Sendable, Equatable {
     }
 }
 
+/// One loaded Mach-O binary image at crash time — the structured input Sentry
+/// Symbolicator needs to resolve a native frame's `instruction_addr` against an
+/// uploaded dSYM. Wire keys follow the native debug-meta contract (snake_case).
+public struct BinaryImage: Codable, Sendable, Equatable {
+    public var name: String
+    /// Normalized lowercase hyphenated UUID (the image's `LC_UUID` → debug id).
+    public var debugId: String
+    public var arch: String
+    /// Image load (mapped header) address, lowercase `0x…` hex.
+    public var imageAddr: String
+    /// `__TEXT` virtual size in bytes (preserved as a 64-bit integer).
+    public var imageSize: UInt64?
+    /// True for the main executable image.
+    public var isMainImage: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case name, arch
+        case debugId = "debug_id"
+        case imageAddr = "image_addr"
+        case imageSize = "image_size"
+        case isMainImage = "is_main_image"
+    }
+
+    public init(name: String, debugId: String, arch: String, imageAddr: String, imageSize: UInt64? = nil, isMainImage: Bool? = nil) {
+        self.name = name
+        self.debugId = debugId
+        self.arch = arch
+        self.imageAddr = imageAddr
+        self.imageSize = imageSize
+        self.isMainImage = isMainImage
+    }
+}
+
+/// One structured native stack frame. `instruction_addr` is the raw program
+/// counter (lowercase `0x…` hex, full 64-bit precision); the backend matches it
+/// to a `BinaryImage` by address range and resolves it via Symbolicator. The
+/// original `backtrace_symbols` line is preserved in `raw_symbol`.
+public struct NativeFrame: Codable, Sendable, Equatable {
+    public var frameIndex: Int
+    public var instructionAddr: String
+    public var imageAddr: String?
+    public var imageName: String?
+    public var rawSymbol: String?
+    public var inApp: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case frameIndex = "frame_index"
+        case instructionAddr = "instruction_addr"
+        case imageAddr = "image_addr"
+        case imageName = "image_name"
+        case rawSymbol = "raw_symbol"
+        case inApp = "in_app"
+    }
+
+    public init(frameIndex: Int, instructionAddr: String, imageAddr: String? = nil, imageName: String? = nil, rawSymbol: String? = nil, inApp: Bool? = nil) {
+        self.frameIndex = frameIndex
+        self.instructionAddr = instructionAddr
+        self.imageAddr = imageAddr
+        self.imageName = imageName
+        self.rawSymbol = rawSymbol
+        self.inApp = inApp
+    }
+}
+
 /// SDK identity carried on every event.
 public struct SdkInfo: Codable, Sendable, Equatable {
     public var name: String
@@ -98,6 +162,15 @@ public struct BugWatchEvent: Codable, Sendable, Equatable {
     /// Release-health session signal. Non-nil only on session events emitted by
     /// auto session tracking; nil on ordinary error/message/crash events.
     public var session: SessionInfo?
+    /// Loaded Mach-O images at crash time (native iOS/macOS crashes, payload v2).
+    public var binaryImages: [BinaryImage]?
+    /// Structured native frames with raw instruction addresses (payload v2).
+    public var nativeStacktrace: [NativeFrame]?
+    /// The crashing thread id, when known.
+    public var crashedThreadId: Int?
+    /// Crash payload version. 2 ⇒ carries structured `binaryImages` +
+    /// `nativeStacktrace` for offline symbolication; nil/1 ⇒ legacy.
+    public var payloadVersion: Int?
 
     public init(
         eventId: String,
@@ -118,7 +191,11 @@ public struct BugWatchEvent: Codable, Sendable, Equatable {
         installId: String? = nil,
         sessionId: String? = nil,
         device: DeviceInfo? = nil,
-        session: SessionInfo? = nil
+        session: SessionInfo? = nil,
+        binaryImages: [BinaryImage]? = nil,
+        nativeStacktrace: [NativeFrame]? = nil,
+        crashedThreadId: Int? = nil,
+        payloadVersion: Int? = nil
     ) {
         self.eventId = eventId
         self.time = time
@@ -139,5 +216,9 @@ public struct BugWatchEvent: Codable, Sendable, Equatable {
         self.sessionId = sessionId
         self.device = device
         self.session = session
+        self.binaryImages = binaryImages
+        self.nativeStacktrace = nativeStacktrace
+        self.crashedThreadId = crashedThreadId
+        self.payloadVersion = payloadVersion
     }
 }
