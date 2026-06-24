@@ -14,7 +14,7 @@ Pod::Spec.new do |s|
   s.platform      = :ios, "14.0"
   s.swift_version = "5.9"
   s.source        = {
-    :git => "https://github.com/talktothelaw/bug-watch-ios.git",
+    :git => "https://github.com/New-Instance-Org/bug-watch-ios.git",
     :tag => s.version.to_s
   }
 

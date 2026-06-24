@@ -3,9 +3,10 @@
 Step-by-step for publishing a new version of BugWatch to **CocoaPods** and
 making it available via **Swift Package Manager**.
 
-> The BugWatch GitLab project, GitHub mirror, and publishing credentials are
-> wired up in a later milestone. Until then, treat the URLs below as the
-> intended targets.
+> Source of truth is GitLab (`gitlab.com/new-instance/sdk-plugins/bug-watch-ios-sdk`);
+> a CI job mirrors all branches **and tags** to the public GitHub repo
+> `github.com/New-Instance-Org/bug-watch-ios`, which is what the podspec's
+> `s.source` points at (CocoaPods clones the tag from there).
 
 ## One-time setup
 
@@ -62,7 +63,7 @@ pod trunk me
 # SPM — clean consumer
 mkdir /tmp/spm-check && cd /tmp/spm-check
 swift package init --type executable
-# add: .package(url: "https://github.com/talktothelaw/bug-watch-ios.git", from: "0.2.0")
+# add: .package(url: "https://github.com/New-Instance-Org/bug-watch-ios.git", from: "0.2.0")
 swift package resolve
 
 # CocoaPods — clean consumer
