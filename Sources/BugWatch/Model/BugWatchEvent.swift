@@ -28,11 +28,17 @@ public struct NormalizedException: Codable, Sendable, Equatable {
     public var type: String
     public var value: String
     public var stacktrace: [StackFrame]?
+    /// Raw, unparsed platform stacktrace text. Carries a Flutter OBFUSCATED
+    /// (address-form) Dart trace — header + frames — verbatim so the backend can
+    /// resolve it with `flutter symbolize`. Nil for everything else (omitted from
+    /// JSON when nil).
+    public var rawStacktrace: String?
 
-    public init(type: String, value: String, stacktrace: [StackFrame]? = nil) {
+    public init(type: String, value: String, stacktrace: [StackFrame]? = nil, rawStacktrace: String? = nil) {
         self.type = type
         self.value = value
         self.stacktrace = stacktrace
+        self.rawStacktrace = rawStacktrace
     }
 }
 
