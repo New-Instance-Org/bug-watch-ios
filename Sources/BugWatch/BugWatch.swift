@@ -7,8 +7,9 @@ import Foundation
 /// persist it to a disk-backed queue, then nudge a serial delivery worker that
 /// signs a fresh ingest token per attempt and POSTs NDJSON batches to the
 /// BugWatch mobile ingest endpoint. Delivery also runs on a timer and resumes
-/// when connectivity returns. Crash/ANR capture and session telemetry arrive in
-/// later milestones.
+/// when connectivity returns. The SDK captures handled errors, native crashes
+/// (POSIX signals and uncaught NSExceptions), app hangs (ANR), breadcrumbs,
+/// and release-health sessions.
 public final class BugWatch {
     /// The shared instance created by `start(options:)`, if any.
     public private(set) static var shared: BugWatch?
