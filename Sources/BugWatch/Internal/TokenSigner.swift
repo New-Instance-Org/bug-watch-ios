@@ -8,7 +8,7 @@ import Crypto
 import CryptoKit
 #endif
 
-/// Encodes `Data` / `String` as **base64url** (RFC 4648 §5): standard base64
+/// Encodes `Data` / `String` as **base64url** (RFC 4648 5): standard base64
 /// with `+`→`-`, `/`→`_`, and `=` padding stripped. Shared by the token signer
 /// and any other code that needs URL-safe base64.
 enum Base64URL {
