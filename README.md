@@ -333,13 +333,6 @@ npm install -g @newinstance/bugwatch-cli
 npx @newinstance/bugwatch-cli --help
 ```
 
-> The CLI is not yet published to npm. Build from source:
-> ```sh
-> git clone https://github.com/New-Instance-Org/bugwatch-cli.git
-> cd bugwatch-cli && npm install && npm run build
-> node dist/index.js symbols upload …
-> ```
-
 ### Upload a dSYM (manually or from CI)
 
 ```sh
@@ -367,6 +360,41 @@ BUGWATCH_AUTH_TOKEN="$BUGWATCH_API_KEY" \
 ```
 
 Store `BUGWATCH_API_KEY` in your Xcode scheme's environment (never in source control).
+
+### Xcode Cloud
+
+Add a `ci_post_xcodebuild.sh` script at your repo root. Xcode Cloud exposes the archive at `$CI_ARCHIVE_PATH`:
+
+```sh
+#!/bin/sh
+set -e
+[ -z "$BUGWATCH_AUTH_TOKEN" ] && exit 0
+
+npx @newinstance/bugwatch-cli symbols upload "$CI_ARCHIVE_PATH" \
+  --platform ios \
+  --release "$CI_PRODUCT_VERSION" \
+  --build-number "$CI_BUILD_NUMBER" \
+  --upload-source xcode-cloud
+```
+
+Set `BUGWATCH_AUTH_TOKEN` as a **Secret** environment variable under **Xcode Cloud → Workflows → Environment**.
+
+### Publishing from local Xcode (manual archive)
+
+To upload dSYMs from a build you archived on your own Mac (Xcode **Product → Archive**):
+
+1. Open **Window → Organizer → Archives**, right-click the archive → **Show in Finder**.
+2. Drag the `.xcarchive` into Terminal to paste its path (the CLI walks its `dSYMs/` folder for you).
+
+```sh
+export BUGWATCH_AUTH_TOKEN="<keyId>:<secret>"
+npx @newinstance/bugwatch-cli symbols upload \
+  "~/Library/Developer/Xcode/Archives/2026-06-28/MyApp 2026-06-28 10.30.xcarchive" \
+  --platform ios \
+  --release "1.4.2+318" \
+  --bundle-id com.example.myapp \
+  --upload-source local-xcode
+```
 
 The SDK already sends `binaryImages` (load addresses + UUIDs) and `nativeStacktrace` (raw instruction addresses) with every crash event so the backend Symbolicator can match frames to your uploaded dSYM automatically.
 
