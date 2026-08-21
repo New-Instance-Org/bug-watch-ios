@@ -18,8 +18,11 @@ pod trunk me
 
 ## Per-release checklist
 
-1. **Bump the version** in `BugWatch.podspec` (`s.version`). SPM uses git tags,
-   so there is no version constant in `Package.swift`.
+1. **Bump the version** in `BugWatch.podspec` (`s.version`) **and**
+   `BugWatch.sdkVersion` in `Sources/BugWatch/BugWatch.swift`. The two must
+   match: `sdkVersion` is stamped on every event as `sdk.version`, so a release
+   that bumps only the podspec mislabels every event it sends. SPM uses git
+   tags, so there is no version constant in `Package.swift`.
 
 2. **Update `CHANGELOG.md`** with the new version's notable changes.
 

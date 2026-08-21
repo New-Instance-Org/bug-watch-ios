@@ -15,7 +15,7 @@ public final class BugWatch {
     public private(set) static var shared: BugWatch?
 
     public static let sdkName = "bugwatch-ios"
-    public static let sdkVersion = "0.1.0"
+    public static let sdkVersion = "0.1.1"
 
     /// Whether the previous run ended in a native crash, read from a tiny
     /// persisted flag. Available even before `start` (e.g. to gate release-health
