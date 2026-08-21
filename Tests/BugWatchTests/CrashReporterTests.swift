@@ -307,6 +307,24 @@ final class CrashReporterTests: XCTestCase {
         XCTAssertTrue(handlersEqual(restored, dfl), "uninstall restored SIG_DFL")
     }
 
+    /// Every trapped signal runs on a dedicated alternate stack, so a
+    /// stack-overflow SIGSEGV (no usable thread stack left) can still be reported.
+    func testHandlersRunOnAlternateSignalStack() {
+        CrashReporter.install(directory: dir)
+
+        var current = stack_t()
+        XCTAssertEqual(sigaltstack(nil, &current), 0)
+        XCTAssertNotNil(current.ss_sp, "an alternate signal stack is registered")
+        XCTAssertEqual(current.ss_flags & SS_DISABLE, 0, "the alternate stack is enabled")
+        XCTAssertGreaterThanOrEqual(current.ss_size, Int(MINSIGSTKSZ))
+
+        for sig in [SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE, SIGTRAP, SIGSYS] {
+            var active = sigaction()
+            XCTAssertEqual(sigaction(sig, nil, &active), 0)
+            XCTAssertNotEqual(active.sa_flags & SA_ONSTACK, 0, "signal \(sig) handler uses SA_ONSTACK")
+        }
+    }
+
     /// The NSException chain target is captured: install saves the prior uncaught
     /// handler and uninstall puts it back.
     func testNSExceptionHandlerChainCaptured() {
