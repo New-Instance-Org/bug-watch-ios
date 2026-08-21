@@ -4,6 +4,31 @@ All notable changes to the BugWatch iOS SDK are documented here.
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **Stack-overflow crashes are now captured.** The signal handlers run on a
+  dedicated alternate signal stack (`sigaltstack` + `SA_ONSTACK`). Previously a
+  stack overflow left the crashing thread with no stack for the kernel to build
+  the signal frame on, so the process died before the handler's first
+  instruction and no artifact was written at all. Verified against the real SDK:
+  the same overflow produced no artifact before the change and a complete
+  62 KB artifact (`signal=11`, 128 frames) after it.
+
+  `sigaltstack` is per-thread and is registered on the thread that calls
+  `BugWatch.start(options:)`, so a stack overflow on a background thread is
+  still missed.
+
+### Documentation
+
+- Documented what is and is not captured, the automatic breadcrumb catalog,
+  device-context fields, the on-disk state layout, the ingest wire format and
+  token scheme, a full public API reference, an end-to-end integration
+  walkthrough, and the SDK's known limitations.
+
+---
+
 ## [0.1.0] — 2026-06-24
 
 Initial release.

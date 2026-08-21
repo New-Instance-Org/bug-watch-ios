@@ -125,6 +125,10 @@ enum CrashReporter {
     /// Saved previous uncaught-exception handler (chained after we write ours).
     private static var previousExceptionHandler: (@convention(c) (NSException) -> Void)?
 
+    private static var alternateStack: UnsafeMutableRawPointer?
+
+    private static let alternateStackSize = max(Int(SIGSTKSZ) * 2, 64 * 1024)
+
     /// Installs the signal + NSException handlers. Idempotent: a second call is a
     /// no-op (the first install's saved previous handlers are preserved).
     ///
@@ -169,11 +173,12 @@ enum CrashReporter {
     // MARK: Signal handling
 
     private static func installSignalHandlersLocked() {
+        let onAlternateStack = installAlternateStackLocked()
         for (index, sig) in trappedSignals.enumerated() {
             var action = sigaction()
             sigemptyset(&action.sa_mask)
             // Restart-able syscalls off; we never return from the handler anyway.
-            action.sa_flags = 0
+            action.sa_flags = onAlternateStack ? SA_ONSTACK : 0
             withUnsafeMutablePointer(to: &action) { setHandler(in: $0, to: CrashReporter.handleSignal) }
 
             var previous = sigaction()
@@ -181,6 +186,21 @@ enum CrashReporter {
                 previousSignalActions[index] = previous
             }
         }
+    }
+
+    private static func installAlternateStackLocked() -> Bool {
+        if alternateStack == nil {
+            alternateStack = UnsafeMutableRawPointer.allocate(
+                byteCount: alternateStackSize,
+                alignment: MemoryLayout<UInt64>.alignment
+            )
+        }
+        guard let storage = alternateStack else { return false }
+        var stack = stack_t()
+        stack.ss_sp = storage
+        stack.ss_size = alternateStackSize
+        stack.ss_flags = 0
+        return sigaltstack(&stack, nil) == 0
     }
 
     /// The signal handler. **MUST stay async-signal-safe**: it may run on a
