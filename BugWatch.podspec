@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name          = "BugWatch"
-  s.version       = "0.1.0"
+  s.version       = "0.1.1"
   s.summary       = "BugWatch — crash, error, and log observability for iOS."
   s.description   = <<~DESC
     BugWatch is the native iOS SDK for the BugWatch observability platform.
