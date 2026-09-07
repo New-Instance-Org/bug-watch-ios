@@ -645,6 +645,37 @@ debug: false
 
 ---
 
+## Connection check
+
+The SDK performs a handshake with BugWatch on start (`POST /api/v1/bugwatch/ingest/mobile/hello`, same signed token, nothing ingested or billed) and keeps a public connection state that every delivery attempt updates afterwards.
+
+```swift
+BugWatch.shared?.onConnectionStateChange = { check in
+    switch check.state {
+    case .connected: print("BugWatch connected, clock skew \(check.clockSkewMs ?? 0) ms")
+    case .rejected: print("BugWatch rejected: \(check.reason ?? "") (HTTP \(check.httpStatus ?? 0)). \(check.hint ?? "")")
+    case .offline, .disconnected: print("BugWatch unreachable: \(check.reason ?? "")")
+    default: break
+    }
+}
+
+let check = await BugWatch.shared?.testConnection()      // on demand
+let state = BugWatch.shared?.connectionState             // ConnectionState
+let detail = BugWatch.shared?.lastConnectionCheck        // ConnectionCheck: reason, hint, status, server time
+```
+
+`.rejected` carries the server's reason and a fix hint:
+
+| Reason | Meaning |
+|--------|---------|
+| `signature_invalid` | The app secret in this build does not match the project |
+| `project_unavailable` | The projectId is wrong, or the project is inactive |
+| `mobile_ingest_disabled` | Mobile ingest is switched off for the project |
+| `token_expired` | The device clock is behind |
+| `clock_ahead` | The device clock is ahead by more than 60 s |
+
+Rejections and unreachable results are emitted through `BugWatchDiagnosticLog` even when `debug: false`, and the dashboard shows the same handshake per platform on the project's setup page under **Mobile SDK connection**.
+
 ## Verifying the integration
 
 1. Set `debug: true` and install a `BugWatchDiagnosticLog` handler (see above).
