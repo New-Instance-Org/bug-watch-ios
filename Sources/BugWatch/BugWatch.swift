@@ -15,7 +15,7 @@ public final class BugWatch {
     public private(set) static var shared: BugWatch?
 
     public static let sdkName = "bugwatch-ios"
-    public static let sdkVersion = "0.1.1"
+    public static let sdkVersion = "0.1.2"
 
     /// Whether the previous run ended in a native crash, read from a tiny
     /// persisted flag. Available even before `start` (e.g. to gate release-health
@@ -55,6 +55,16 @@ public final class BugWatch {
     private var breadcrumbs: [Breadcrumb] = []
 
     private var flushTimer: DispatchSourceTimer?
+    private let outcomeSink = TransportOutcomeSink()
+
+    /// Coarse transport state, updated by every delivery attempt and by `testConnection()`.
+    public private(set) var connectionState: ConnectionState = .idle
+
+    /// Full detail of the most recent check, including the server's rejection reason and hint.
+    public private(set) var lastConnectionCheck: ConnectionCheck?
+
+    /// Invoked (possibly off the main thread) whenever the connection state changes.
+    public var onConnectionStateChange: ((ConnectionCheck) -> Void)?
 
     /// SDK working directory for the queue / crash sidecar / session descriptor.
     /// Defaults to the shared Application-Support namespace; overridable only via
@@ -83,7 +93,8 @@ public final class BugWatch {
         let transport = HttpTransport(
             endpoint: options.endpoint,
             requestTimeoutMs: options.requestTimeoutMs,
-            session: session
+            session: session,
+            outcomeSink: outcomeSink
         )
         self.transport = transport
         let debug = options.debug
@@ -182,6 +193,81 @@ public final class BugWatch {
         // Attempt to deliver anything left over from a previous run (incl. the
         // fatal event just enqueued from a crash).
         drainAsync()
+
+        outcomeSink.handler = { [weak self] outcome in
+            self?.handleTransportOutcome(outcome)
+        }
+        if options.enabled {
+            Task { [weak self] in
+                _ = await self?.testConnection()
+            }
+        }
+    }
+
+    // MARK: Connectivity
+
+    /// Performs an explicit handshake with BugWatch using this app's mobile credentials and
+    /// returns exactly why it succeeded or failed. Nothing is ingested or billed.
+    @discardableResult
+    public func testConnection() async -> ConnectionCheck {
+        let token = signer.signNow(pid: options.projectId, env: options.environment)
+        let check = await transport.hello(token: token, body: helloBody())
+        applyConnection(check)
+        return check
+    }
+
+    public func testConnection(completion: @escaping @Sendable (ConnectionCheck) -> Void) {
+        Task { [weak self] in
+            guard let self else { return }
+            completion(await self.testConnection())
+        }
+    }
+
+    private func helloBody() -> Data {
+        var device: [String: Any] = [:]
+        if let model = self.device.model { device["model"] = model }
+        if let osVersion = self.device.osVersion { device["osVersion"] = osVersion }
+        if let appVersion = self.device.appVersion { device["appVersion"] = appVersion }
+        let body: [String: Any] = [
+            "platform": "ios",
+            "sdk": ["name": BugWatch.sdkName, "version": BugWatch.sdkVersion],
+            "device": device,
+        ]
+        return (try? JSONSerialization.data(withJSONObject: body)) ?? Data("{}".utf8)
+    }
+
+    private func handleTransportOutcome(_ outcome: TransportOutcome) {
+        switch outcome.result {
+        case .success:
+            applyConnection(ConnectionCheck(state: .connected, httpStatus: outcome.httpStatus))
+        case .drop:
+            guard let status = outcome.httpStatus else { return }
+            applyConnection(ConnectionCheck(state: .rejected, httpStatus: status, reason: outcome.reason ?? "http_\(status)", hint: outcome.hint))
+        case .retryable:
+            if outcome.httpStatus == nil {
+                applyConnection(ConnectionCheck(state: .offline, reason: "unreachable", hint: outcome.error))
+            }
+        }
+    }
+
+    private func applyConnection(_ check: ConnectionCheck) {
+        lock.lock()
+        connectionState = check.state
+        lastConnectionCheck = check
+        let callback = onConnectionStateChange
+        lock.unlock()
+        switch check.state {
+        case .connected:
+            log("connection: ok" + (check.clockSkewMs.map { " (clock skew \($0)ms)" } ?? ""))
+        case .rejected:
+            let line = "[BugWatch] rejected by BugWatch (HTTP \(check.httpStatus ?? 0), \(check.reason ?? "unknown")). \(check.hint ?? "")"
+            BugWatchDiagnosticLog.emit(line)
+        case .offline, .disconnected:
+            BugWatchDiagnosticLog.emit("[BugWatch] could not reach \(options.endpoint): \(check.reason ?? "unreachable") \(check.hint ?? "")")
+        case .idle, .connecting:
+            break
+        }
+        callback?(check)
     }
 
     /// Reads a pending crash artifact (if any), builds a `.fatal` event from it
